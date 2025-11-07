@@ -1,0 +1,19 @@
+
+Functional description for the software:
+
+Its a piece of software that can load a floor plan and type in the scale of the drawing. once loaded into the software the main window works as a zoomable and moveable plan where the user can choose to either click to add smoke detectors which are red dots,
+or add lines between them. The user can also click to edit the red dots, and by doing this he gets a popup that allows him to set the range of the smoke detector in meters, which makes a small opaque gray circle around the red dot. The user is also able to click the dot and enter the following items:
+
+- Model
+- Range
+
+- Bus number
+- Address
+- Serial number
+
+The user can in the top bar choose to save the file or export to pdf. The export to PDF, Creates a overview of the floor plan, and a list of the detector on each bus line sorted by Address and contains all info regarding the detector arranged in a neat "pearls on a string" like setup.
+
+
+
+Uppon startup the user should be able to select a project file (Or create a new) which will be the file we use to store all the configs for the software and pictures and data.
+Once selected, the user now gets a new window which is the main window, where he will be greeted by the loaded floor plan. He is then able to from the top menu select to add new detectors or he can click on the current detectors and edit them. The user the saves the file when he is done and if he wants to, he then exports to PDF so the electrician can pull the cables and mount the detectors like shown in the floor plan.
