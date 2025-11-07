@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import QGraphicsItem, QGraphicsEllipseItem, QGraphicsTextItem
 from PyQt6.QtCore import Qt, QRectF
-from PyQt6.QtGui import QPen, QBrush, QColor
+from PyQt6.QtGui import QPen, QBrush, QColor, QFont
 
 class SmokeDetector(QGraphicsEllipseItem):
     def __init__(self, pos, controller=None):
@@ -18,6 +18,10 @@ class SmokeDetector(QGraphicsEllipseItem):
         self.bus_number = ""
         self.group = ""
         self.address = ""
+        # Optional room identifier (displayed above address label)
+        self.room_id = ""
+        # Device type: Detector, IO, SoundEmitter, CallPoint, etc.
+        self.device_type = "Detector"
         self.serial_number = ""
         self.qr_data = ""
         self.brand = ""
@@ -28,17 +32,55 @@ class SmokeDetector(QGraphicsEllipseItem):
         
         # Range circle (gray area)
         self.range_circle = None
-        # Address label shown near detector (hidden until populated)
+        # Room label (above) and Address label (below) shown near detector
         try:
+            # Room label (shows `room_id` when present)
+            self.room_label = QGraphicsTextItem("", parent=self)
+            self.room_label.setDefaultTextColor(QColor(0, 0, 0))
+            self.room_label.setZValue(2)
+            try:
+                rf = self.room_label.font()
+                rsize = rf.pointSizeF()
+                if not rsize or rsize <= 0:
+                    rsize = 8.0
+                rf.setPointSizeF(rsize * 2.0)
+                self.room_label.setFont(rf)
+            except Exception:
+                pass
+            try:
+                self.room_label.setPos(12, -28)
+            except Exception:
+                pass
+
+            # Address label shown below room label; make it larger per user request
             self.address_label = QGraphicsTextItem("", parent=self)
             self.address_label.setDefaultTextColor(QColor(0, 0, 0))
             self.address_label.setZValue(2)
+            # Make the label at least 2x the default text size (fall back to a sensible size)
+            try:
+                f = self.address_label.font()
+                size = f.pointSizeF()
+                if not size or size <= 0:
+                    # some environments may return -1; choose a reasonable default base size
+                    size = 8.0
+                f.setPointSizeF(size * 3.0)
+                self.address_label.setFont(f)
+            except Exception:
+                # if anything goes wrong, try a fixed larger font
+                try:
+                    f2 = QFont()
+                    f2.setPointSizeF(14.0)
+                    self.address_label.setFont(f2)
+                except Exception:
+                    pass
+
             # position offset relative to detector
             try:
                 self.address_label.setPos(12, -12)
             except Exception:
                 pass
         except Exception:
+            self.room_label = None
             self.address_label = None
         
         self.setAcceptHoverEvents(True)
@@ -107,7 +149,7 @@ class SmokeDetector(QGraphicsEllipseItem):
     def update_address_label(self):
         """Update the small address label shown next to the detector.
 
-        Format: bus-groupaddress (e.g. 1-02015 or similar). Only shown when
+        Format: bus-groupaddress (e.g. 01-2015 or similar). Only shown when
         bus, group and address are available.
         """
         try:
@@ -116,16 +158,65 @@ class SmokeDetector(QGraphicsEllipseItem):
             bus = str(getattr(self, 'bus_number', '') or '').strip()
             group = str(getattr(self, 'group', '') or '').strip()
             addr = str(getattr(self, 'address', '') or '').strip()
+            room = str(getattr(self, 'room_id', '') or '').strip()
+
+            # Update room label first
+            try:
+                if getattr(self, 'room_label', None):
+                    if room:
+                        self.room_label.setPlainText(room)
+                        self.room_label.setVisible(True)
+                    else:
+                        self.room_label.setPlainText("")
+                        self.room_label.setVisible(False)
+            except Exception:
+                pass
+
             if bus and group and addr:
-                label = f"{bus}-{group}{addr}"
-                self.address_label.setPlainText(label)
-                self.address_label.setVisible(True)
+                # Prefer numeric formatting: bus -> 2 digits, group -> as-is (single digit), address -> 3 digits
+                try:
+                    bus_i = int(bus)
+                    group_i = int(group)
+                    addr_i = int(addr)
+                    label = f"{bus_i:02d}-{group_i}{addr_i:03d}"
+                except Exception:
+                    # fallback to raw concatenation if values aren't numeric
+                    label = f"{bus}-{group}{addr}"
+                try:
+                    if getattr(self, 'address_label', None):
+                        self.address_label.setPlainText(label)
+                        self.address_label.setVisible(True)
+                except Exception:
+                    pass
             else:
                 # hide if incomplete
-                self.address_label.setPlainText("")
-                self.address_label.setVisible(False)
+                try:
+                    if getattr(self, 'address_label', None):
+                        self.address_label.setPlainText("")
+                        self.address_label.setVisible(False)
+                except Exception:
+                    pass
+                
+        except Exception:
+                    pass
+
+    def get_full_address_label(self):
+        """Return the formatted full address label (same format used for display) or empty string."""
+        try:
+            bus = str(getattr(self, 'bus_number', '') or '').strip()
+            group = str(getattr(self, 'group', '') or '').strip()
+            addr = str(getattr(self, 'address', '') or '').strip()
+            if bus and group and addr:
+                try:
+                    bus_i = int(bus)
+                    group_i = int(group)
+                    addr_i = int(addr)
+                    return f"{bus_i:02d}-{group_i}{addr_i:03d}"
+                except Exception:
+                    return f"{bus}-{group}{addr}"
         except Exception:
             pass
+        return ""
     
     def mousePressEvent(self, event):
         """Handle selection and editing"""

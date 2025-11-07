@@ -41,6 +41,11 @@ class DetectorDialog(QDialog):
         self.address_edit.setText(getattr(detector, 'address', ''))
         layout.addRow("Address:", self.address_edit)
 
+        # Room ID (optional)
+        self.room_edit = QLineEdit(self)
+        self.room_edit.setText(getattr(detector, 'room_id', ''))
+        layout.addRow("Room ID:", self.room_edit)
+
         # Serial number
         self.serial_edit = QLineEdit(self)
         self.serial_edit.setText(getattr(detector, 'serial_number', ''))
@@ -79,6 +84,7 @@ class DetectorDialog(QDialog):
             new_range = float(self.range_spin.value())
             self.detector.bus_number = self.bus_edit.text()
             self.detector.address = self.address_edit.text()
+            self.detector.room_id = self.room_edit.text()
             self.detector.serial_number = self.serial_edit.text()
             self.detector.group = self.group_edit.text()
             self.detector.qr_data = self.qr_edit.text()

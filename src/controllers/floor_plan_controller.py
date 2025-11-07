@@ -13,6 +13,11 @@ class FloorPlanController:
     def __init__(self, parent):
         self.scene = QGraphicsScene()
         self.view = FloorPlanView(self.scene, parent)
+        # expose controller to the view so it can read scale for coordinate conversion
+        try:
+            self.view.controller = self
+        except Exception:
+            pass
         self.detectors = []
         self.lines = []  # list of {'item': QGraphicsLineItem, 'start': detector, 'end': detector}
         self._line_start = None
@@ -104,8 +109,15 @@ class FloorPlanController:
                 "model": getattr(d, 'model', ''),
                 "range": getattr(d, 'range', 0),
                 "bus_number": getattr(d, 'bus_number', ''),
+                "group": getattr(d, 'group', ''),
                 "address": getattr(d, 'address', ''),
+                "full_address_label": getattr(d, 'get_full_address_label', lambda: '')(),
                 "serial_number": getattr(d, 'serial_number', ''),
+                "room_id": getattr(d, 'room_id', ''),
+                "qr_data": getattr(d, 'qr_data', ''),
+                "brand": getattr(d, 'brand', ''),
+                "paired_sn": getattr(d, 'paired_sn', ''),
+                "device_type": getattr(d, 'device_type', 'Detector'),
             })
 
         # Include the stored floorplan path if available
@@ -169,6 +181,8 @@ class FloorPlanController:
                 d.bus_number = item.get('bus_number', '')
                 d.group = item.get('group', '')
                 d.address = item.get('address', '')
+                d.room_id = item.get('room_id', '')
+                d.device_type = item.get('device_type', 'Detector')
                 d.serial_number = item.get('serial_number', '')
                 d.qr_data = item.get('qr_data', '')
                 d.brand = item.get('brand', '')
@@ -200,6 +214,66 @@ class FloorPlanController:
             self.update_detector_colors()
         except Exception:
             pass
+
+    def validate_project(self):
+        """Validate project for common errors prior to export.
+
+        Returns (errors, warnings) where each is a list of strings.
+        """
+        errors = []
+        warnings = []
+
+        # Missing serial numbers
+        missing_serial = [d for d in self.detectors if not (getattr(d, 'serial_number', '') or '').strip()]
+        if missing_serial:
+            errors.append(f"{len(missing_serial)} detector(s) missing serial number(s).")
+
+        # Duplicate serial numbers
+        sn_map = {}
+        for d in self.detectors:
+            sn = (getattr(d, 'serial_number', '') or '').strip()
+            if sn:
+                sn_map.setdefault(sn, []).append(d)
+        dup_sns = {sn: items for sn, items in sn_map.items() if len(items) > 1}
+        if dup_sns:
+            for sn, items in dup_sns.items():
+                labels = [getattr(i, 'get_full_address_label', lambda: '')() or f"@{i.pos().x():.0f},{i.pos().y():.0f}" for i in items]
+                errors.append(f"Duplicate serial '{sn}' found on detectors: {', '.join(labels)}")
+
+        # Duplicate address labels
+        addr_map = {}
+        for d in self.detectors:
+            lbl = ''
+            try:
+                lbl = d.get_full_address_label()
+            except Exception:
+                lbl = ''
+            if lbl:
+                addr_map.setdefault(lbl, []).append(d)
+        dup_addrs = {lbl: items for lbl, items in addr_map.items() if len(items) > 1}
+        if dup_addrs:
+            for lbl, items in dup_addrs.items():
+                poslist = [f"@{i.pos().x():.0f},{i.pos().y():.0f}" for i in items]
+                errors.append(f"Duplicate address label '{lbl}' on detectors at: {', '.join(poslist)}")
+
+        # Spacing check (requires numeric self.scale which is meters-per-pixel)
+        if isinstance(self.scale, (int, float)) and float(self.scale) > 0:
+            for i in range(len(self.detectors)):
+                for j in range(i + 1, len(self.detectors)):
+                    a = self.detectors[i]
+                    b = self.detectors[j]
+                    dx = a.pos().x() - b.pos().x()
+                    dy = a.pos().y() - b.pos().y()
+                    pix = math.hypot(dx, dy)
+                    meters = pix * float(self.scale)
+                    if meters < 0.5:
+                        la = getattr(a, 'get_full_address_label', lambda: '')() or f"@{a.pos().x():.0f},{a.pos().y():.0f}"
+                        lb = getattr(b, 'get_full_address_label', lambda: '')() or f"@{b.pos().x():.0f},{b.pos().y():.0f}"
+                        errors.append(f"Detectors too close (<0.5m): {la} and {lb} (distance {meters:.2f} m)")
+        else:
+            warnings.append("Project scale is not a numeric meters-per-pixel value; spacing checks were skipped. Calibrate project to enable spacing validation.")
+
+        return errors, warnings
     
     def add_detector(self, pos):
         detector = SmokeDetector(pos, controller=self)
@@ -420,6 +494,29 @@ class FloorPlanController:
         story = []
         styles = getSampleStyleSheet()
 
+        # Validate project before exporting
+        try:
+            errors, warnings = self.validate_project()
+        except Exception:
+            errors, warnings = ([], [])
+
+        if errors:
+            try:
+                QMessageBox.critical(self.parent, "Validation Errors", "\n".join(errors))
+            except Exception:
+                pass
+            return
+
+        if warnings:
+            try:
+                msg = "Warnings found:\n" + "\n".join(warnings) + "\n\nContinue with PDF export?"
+                resp = QMessageBox.question(self.parent, "Validation Warnings", msg, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                if resp != QMessageBox.StandardButton.Yes:
+                    return
+            except Exception:
+                # if the dialog cannot be shown, continue
+                pass
+
         # Project Info
         title_style = ParagraphStyle(
             'CustomTitle',
@@ -489,27 +586,42 @@ class FloorPlanController:
         for bus in bus_groups.values():
             bus.sort(key=lambda d: getattr(d, 'address', ''))
 
-        # Create detector tables for each bus
+        # Create detector tables for each bus with new column order
         for bus_num in sorted(bus_groups.keys()):
             # Bus header
             story.append(Paragraph(f"Bus {bus_num}", styles['Heading2']))
             story.append(Spacer(1, 10))
 
-            # Detector table
-            data = [['Address', 'Model', 'Range (m)', 'Serial Number']]
+            # Detector table with columns: Bus, Group, Address, Full address label, Serial number, Room ID, QR data, Type
+            header = ['Bus', 'Group', 'Address', 'Full\naddress', 'Serial number', 'Room ID', 'QR data', 'Type']
+            data = [header]
             for d in bus_groups[bus_num]:
-                data.append([
-                    getattr(d, 'address', ''),
-                    getattr(d, 'model', ''),
-                    str(getattr(d, 'range', 0)),
-                    getattr(d, 'serial_number', '')
-                ])
+                full_label = ''
+                try:
+                    full_label = getattr(d, 'get_full_address_label', lambda: '')() or ''
+                except Exception:
+                    full_label = ''
 
-            table = Table(data, colWidths=[3*cm, 5*cm, 3*cm, 5*cm])
+                qr_para = Paragraph((getattr(d, 'qr_data', '') or '').replace('\n', '<br />'), styles['Normal'])
+
+                row = [
+                    str(bus_num),
+                    getattr(d, 'group', ''),
+                    getattr(d, 'address', ''),
+                    full_label,
+                    getattr(d, 'serial_number', ''),
+                    getattr(d, 'room_id', ''),
+                    qr_para,
+                    getattr(d, 'device_type', 'Detector')
+                ]
+                data.append(row)
+
+            # Choose reasonable column widths (sum should fit A4 landscape content area)
+            colWidths = [1*cm, 1.8*cm, 2.2*cm, 2*cm, 6*cm, 3*cm, 6*cm, 2*cm]
+            table = Table(data, colWidths=colWidths)
             table.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, 0), 12),
                 ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
@@ -518,7 +630,8 @@ class FloorPlanController:
                 ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
                 ('FONTSIZE', (0, 1), (-1, -1), 10),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('ALIGN', (0, 0), (4, -1), 'CENTER'),
+                ('ALIGN', (5, 0), (5, -1), 'CENTER'),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ]))
             story.append(table)
