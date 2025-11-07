@@ -1,0 +1,539 @@
+from PyQt6.QtWidgets import QGraphicsScene, QGraphicsView, QInputDialog, QMessageBox
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QPainter, QPen, QBrush, QColor
+from models.smoke_detector import SmokeDetector
+from views.floor_plan_view import FloorPlanView
+import json
+from pathlib import Path
+from PyQt6.QtCore import QPointF
+import base64
+import math
+
+class FloorPlanController:
+    def __init__(self, parent):
+        self.scene = QGraphicsScene()
+        self.view = FloorPlanView(self.scene, parent)
+        self.detectors = []
+        self.lines = []  # list of {'item': QGraphicsLineItem, 'start': detector, 'end': detector}
+        self._line_start = None
+        self.scale = 1.0  # meters per pixel
+        self.parent = parent
+        # Whether detector range circles should be visible
+        self.show_ranges = True
+        self._calibrating = False
+        self._calibration_points = []
+        
+        # Setup view properties
+        self.view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.view.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.view.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+
+        # Connect view's add-detector signal to the controller
+        try:
+            self.view.add_detector_requested.connect(self.add_detector)
+            self.view.calibration_point_requested.connect(self._on_calibration_point)
+        except Exception:
+            # Defensive: if the view doesn't have the signal (older versions), ignore
+            pass
+    
+    def load_floor_plan(self, image_path):
+        from PyQt6.QtGui import QPixmap
+        from PyQt6.QtWidgets import QGraphicsPixmapItem
+
+        pix = QPixmap()
+        # image_path may be bytes (already decoded) or a filesystem path
+        if isinstance(image_path, (bytes, bytearray)):
+            loaded = pix.loadFromData(bytes(image_path))
+            if not loaded:
+                raise ValueError("Could not load image from binary data")
+            self.floorplan_path = None
+            self.floorplan_blob = bytes(image_path)
+        else:
+            # assume a path-like string
+            pix = QPixmap(str(image_path))
+            if pix.isNull():
+                raise ValueError(f"Could not load image: {image_path}")
+            self.floorplan_path = str(image_path)
+            self.floorplan_blob = None
+
+        # Remove any existing floor plan items
+        for item in list(self.scene.items()):
+            # Keep detector items (they are SmokeDetector instances) but remove pixmaps
+            from PyQt6.QtWidgets import QGraphicsPixmapItem as _GPI
+            if isinstance(item, _GPI):
+                self.scene.removeItem(item)
+
+        self.floor_plan_item = QGraphicsPixmapItem(pix)
+        # Place the floor plan at the origin
+        self.floor_plan_item.setZValue(-10)
+        self.scene.addItem(self.floor_plan_item)
+        # Fit view to the image bounds if view is available
+        try:
+            self.view.fitInView(self.floor_plan_item, Qt.AspectRatioMode.KeepAspectRatio)
+        except Exception:
+            pass
+
+    def to_dict(self):
+        """Serialize the current project state to a dictionary."""
+        data = {
+            "floorplan_path": getattr(self, 'floorplan_path', None),
+            "floorplan_blob": None,
+            "floorplan_name": None,
+            "scale": self.scale,
+            "detectors": [],
+            "lines": [],
+        }
+
+        # If we have an embedded image blob, include it base64-encoded
+        if getattr(self, 'floorplan_blob', None):
+            data['floorplan_blob'] = base64.b64encode(self.floorplan_blob).decode('ascii')
+            data['floorplan_name'] = Path(getattr(self, 'floorplan_path', '') or '').name or None
+        else:
+            # If we have only a path, include the path
+            data['floorplan_path'] = getattr(self, 'floorplan_path', None)
+
+        # Collect detectors
+        for d in self.detectors:
+            pos = d.pos()
+            data["detectors"].append({
+                "x": pos.x(),
+                "y": pos.y(),
+                "model": getattr(d, 'model', ''),
+                "range": getattr(d, 'range', 0),
+                "bus_number": getattr(d, 'bus_number', ''),
+                "address": getattr(d, 'address', ''),
+                "serial_number": getattr(d, 'serial_number', ''),
+            })
+
+        # Include the stored floorplan path if available
+        # Serialize lines as detector index pairs
+        for ln in self.lines:
+            try:
+                s = self.detectors.index(ln['start'])
+                e = self.detectors.index(ln['end'])
+                data['lines'].append([s, e])
+            except Exception:
+                continue
+
+        return data
+
+    def from_dict(self, data: dict):
+        """Load project state from a dictionary (reverse of to_dict)."""
+        # Clear existing detectors
+        for d in list(self.detectors):
+            try:
+                self.remove_detector(d)
+            except Exception:
+                pass
+
+        # Load floorplan if present
+        # Load floorplan: prefer embedded blob, fall back to path
+        if data.get('floorplan_blob'):
+            try:
+                blob = base64.b64decode(data['floorplan_blob'])
+                # load directly from bytes
+                try:
+                    self.load_floor_plan(blob)
+                except Exception:
+                    # fallback: write to temp file? For now ignore
+                    self.floorplan_blob = blob
+            except Exception:
+                pass
+        else:
+            fp = data.get('floorplan_path')
+            if fp:
+                self.floorplan_path = fp
+                try:
+                    self.load_floor_plan(fp)
+                except Exception:
+                    # ignore load errors here; caller may handle
+                    pass
+
+        # Set scale
+        if 'scale' in data:
+            try:
+                self.set_scale(data['scale'])
+            except Exception:
+                self.scale = data['scale']
+
+        # Recreate detectors
+        for item in data.get('detectors', []):
+            try:
+                x = float(item.get('x', 0))
+                y = float(item.get('y', 0))
+                d = self.add_detector(QPointF(x, y))
+                d.model = item.get('model', '')
+                d.bus_number = item.get('bus_number', '')
+                d.group = item.get('group', '')
+                d.address = item.get('address', '')
+                d.serial_number = item.get('serial_number', '')
+                d.qr_data = item.get('qr_data', '')
+                d.brand = item.get('brand', '')
+                d.paired_sn = item.get('paired_sn', '')
+                r = item.get('range', 0)
+                try:
+                    self.set_detector_range(d, float(r))
+                except Exception:
+                    d.set_range(r, pixels_per_meter=None)
+                try:
+                    d.update_address_label()
+                except Exception:
+                    pass
+            except Exception:
+                continue
+
+        # Recreate lines after detectors are created
+        for pair in data.get('lines', []):
+            try:
+                s_idx, e_idx = pair
+                s = self.detectors[int(s_idx)]
+                e = self.detectors[int(e_idx)]
+                self.add_line(s, e)
+            except Exception:
+                continue
+
+        # Update colors based on serial uniqueness
+        try:
+            self.update_detector_colors()
+        except Exception:
+            pass
+    
+    def add_detector(self, pos):
+        detector = SmokeDetector(pos, controller=self)
+        self.detectors.append(detector)
+        self.scene.addItem(detector)
+        # update coloring for serial uniqueness
+        try:
+            self.update_detector_colors()
+        except Exception:
+            pass
+        return detector
+
+    def add_line(self, start_detector, end_detector):
+        """Add a visual line connecting two detectors and track it."""
+        from PyQt6.QtWidgets import QGraphicsLineItem
+
+        line = QGraphicsLineItem(start_detector.pos().x(), start_detector.pos().y(), end_detector.pos().x(), end_detector.pos().y())
+        pen = QPen(Qt.GlobalColor.black)
+        pen.setWidth(2)
+        line.setPen(pen)
+        line.setZValue(1)
+        self.scene.addItem(line)
+        self.lines.append({'item': line, 'start': start_detector, 'end': end_detector})
+        return line
+
+    def handle_line_click(self, detector):
+        """Called when a detector is clicked while in line-mode. Creates a line between two consecutive clicks."""
+        if self._line_start is None:
+            self._line_start = detector
+            return
+        if detector is self._line_start:
+            # clicked same detector, reset
+            self._line_start = None
+            return
+        # create line
+        try:
+            self.add_line(self._line_start, detector)
+        except Exception:
+            pass
+        self._line_start = None
+
+    def start_calibration(self):
+        """Enter calibration mode: user will click two points on the plan and enter the real-world distance."""
+        self._calibrating = True
+        self._calibration_points = []
+        try:
+            self.view.set_calibrate_mode(True)
+        except Exception:
+            pass
+        try:
+            QMessageBox.information(self.parent, "Calibration", "Click two points on the floor plan that correspond to a known real-world distance (e.g., a corridor length).")
+        except Exception:
+            pass
+
+    def _on_calibration_point(self, pos: QPointF):
+        if not self._calibrating:
+            return
+        self._calibration_points.append(pos)
+        if len(self._calibration_points) < 2:
+            return
+
+        p1, p2 = self._calibration_points[:2]
+        dx = p2.x() - p1.x()
+        dy = p2.y() - p1.y()
+        pixel_distance = math.hypot(dx, dy)
+
+        # Ask user for real-world distance in meters
+        try:
+            meters, ok = QInputDialog.getDouble(self.parent or None, "Calibration", "Enter the real-world distance between the two points (meters):", 1.0, 0.0001, 1e6, 4)
+        except Exception:
+            meters, ok = (0.0, False)
+
+        # Exit calibration mode regardless
+        self._calibrating = False
+        try:
+            self.view.set_calibrate_mode(False)
+        except Exception:
+            pass
+
+        if not ok or meters <= 0 or pixel_distance <= 0:
+            try:
+                QMessageBox.warning(self.parent, "Calibration", "Calibration cancelled or invalid. No changes made.")
+            except Exception:
+                pass
+            return
+
+        meters_per_pixel = float(meters) / float(pixel_distance)
+        # store scale as meters_per_pixel
+        try:
+            self.set_scale(meters_per_pixel)
+        except Exception:
+            self.scale = meters_per_pixel
+
+        # Reapply ranges so circles draw using the new scale
+        for d in list(self.detectors):
+            try:
+                self.set_detector_range(d, getattr(d, 'range', 0))
+            except Exception:
+                pass
+
+        try:
+            QMessageBox.information(self.parent, "Calibration", f"Calibration complete. Computed meters-per-pixel: {meters_per_pixel:.6f}")
+        except Exception:
+            pass
+
+    def update_detector_colors(self):
+        """Set detectors to green when their serial number is unique, otherwise red."""
+        counts = {}
+        for d in self.detectors:
+            sn = getattr(d, 'serial_number', '') or ''
+            counts[sn] = counts.get(sn, 0) + 1
+
+        for d in self.detectors:
+            sn = getattr(d, 'serial_number', '') or ''
+            try:
+                if sn and counts.get(sn, 0) == 1:
+                    d.setBrush(QBrush(QColor(0, 200, 0)))  # Green for unique serial
+                else:
+                    d.setBrush(QBrush(QColor(255, 140, 0)))  # Orange for non-unique or empty serial
+            except Exception:
+                pass
+
+    def update_range_visibility(self):
+        """Show or hide range circles for all detectors based on controller setting."""
+        for d in self.detectors:
+            try:
+                if getattr(d, 'range_circle', None):
+                    d.range_circle.setVisible(bool(self.show_ranges))
+            except Exception:
+                pass
+
+    def set_detector_range(self, detector, range_meters):
+        """Set detector range in meters and update visual if possible.
+
+        If the controller has a numeric `self.scale` (meters_per_pixel), compute
+        pixels_per_meter = 1 / meters_per_pixel and pass to the detector. If
+        the scale is not numeric (e.g. stored as '1:100'), the visual range
+        cannot be determined without calibration; the detector will store the
+        numeric range but no visual circle will be drawn.
+        """
+        # store numeric range on the detector
+        try:
+            if isinstance(self.scale, (int, float)) and self.scale > 0:
+                pixels_per_meter = 1.0 / float(self.scale)
+                detector.set_range(range_meters, pixels_per_meter)
+            else:
+                # unknown pixels_per_meter — set range value but don't draw
+                detector.set_range(range_meters, pixels_per_meter=None)
+        except Exception:
+            # fallback: set without drawing
+            detector.set_range(range_meters, pixels_per_meter=None)
+    
+    def remove_detector(self, detector):
+        if detector in self.detectors:
+            # Remove any lines connected to this detector
+            for ln in list(self.lines):
+                try:
+                    if ln.get('start') is detector or ln.get('end') is detector:
+                        try:
+                            self.scene.removeItem(ln.get('item'))
+                        except Exception:
+                            pass
+                        try:
+                            self.lines.remove(ln)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            self.detectors.remove(detector)
+            try:
+                self.scene.removeItem(detector)
+            except Exception:
+                pass
+
+            # update colors after removal
+            try:
+                self.update_detector_colors()
+            except Exception:
+                pass
+    
+    def set_scale(self, meters_per_pixel):
+        # The API accepts either a numeric meters_per_pixel or a string like "1:100".
+        if isinstance(meters_per_pixel, str):
+            text = meters_per_pixel.strip()
+            if text.startswith("1:"):
+                # Store the ratio string for now; precise pixel-based scaling requires calibration
+                self.scale = text
+                return
+            else:
+                try:
+                    val = float(text)
+                    self.scale = val
+                except ValueError:
+                    # keep as raw string
+                    self.scale = text
+        else:
+            self.scale = meters_per_pixel
+        # TODO: Update visual elements based on new scale (requires converting between pixels and meters)
+    
+    def export_to_pdf(self, file_path):
+        """Export the floor plan and detector details to PDF."""
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib.units import cm
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from PyQt6.QtCore import QBuffer, QByteArray
+        from PyQt6.QtGui import QImage
+        import io
+        from datetime import datetime
+
+        pagesize = landscape(A4)
+        page_w, page_h = pagesize
+        doc = SimpleDocTemplate(file_path, pagesize=pagesize)
+        story = []
+        styles = getSampleStyleSheet()
+
+        # Project Info
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=24,
+            spaceAfter=30
+        )
+        project_name = getattr(self.parent, 'project_name', 'Untitled Project')
+        story.append(Paragraph(f"Project: {project_name}", title_style))
+
+        # Add current date
+        date_style = ParagraphStyle(
+            'DateStyle',
+            parent=styles['Normal'],
+            fontSize=10,
+            textColor=colors.gray
+        )
+        story.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", date_style))
+        story.append(Spacer(1, 20))
+
+        # Floor Plan
+        if hasattr(self, 'floor_plan_item') and self.floor_plan_item:
+            # Create QImage from the scene. QImage requires integer dimensions.
+            scene_rect = self.scene.sceneRect()
+            w = max(1, int(math.ceil(scene_rect.width())))
+            h = max(1, int(math.ceil(scene_rect.height())))
+
+            image = QImage(w, h, QImage.Format.Format_ARGB32)
+            # Fill with white using a Qt color (reportlab.colors.white is not compatible)
+            image.fill(QColor(255, 255, 255))
+
+            painter = QPainter(image)
+            # Render the scene into the QImage
+            try:
+                self.scene.render(painter)
+            finally:
+                painter.end()
+
+            # Convert QImage to PNG bytes via QBuffer
+            buffer = QBuffer()
+            buffer.open(QBuffer.OpenModeFlag.ReadWrite)
+            image.save(buffer, "PNG")
+            image_data = bytes(buffer.data())
+
+            # Add floor plan image to PDF
+            img = Image(io.BytesIO(image_data))
+            # Compute available area on the page (leave margins and space for header/footer)
+            available_w = page_w - 2*cm
+            available_h = page_h - 6*cm
+            scene_w = max(1.0, float(scene_rect.width()))
+            scene_h = max(1.0, float(scene_rect.height()))
+            scale = min(available_w / scene_w, available_h / scene_h)
+            img.drawWidth = float(scene_w) * scale
+            img.drawHeight = float(scene_h) * scale
+            story.append(img)
+            story.append(Spacer(1, 20))
+
+        # Group detectors by bus number
+        bus_groups = {}
+        for d in self.detectors:
+            bus_num = getattr(d, 'bus_number', '') or 'Unassigned'
+            if bus_num not in bus_groups:
+                bus_groups[bus_num] = []
+            bus_groups[bus_num].append(d)
+
+        # Sort detectors within each bus by address
+        for bus in bus_groups.values():
+            bus.sort(key=lambda d: getattr(d, 'address', ''))
+
+        # Create detector tables for each bus
+        for bus_num in sorted(bus_groups.keys()):
+            # Bus header
+            story.append(Paragraph(f"Bus {bus_num}", styles['Heading2']))
+            story.append(Spacer(1, 10))
+
+            # Detector table
+            data = [['Address', 'Model', 'Range (m)', 'Serial Number']]
+            for d in bus_groups[bus_num]:
+                data.append([
+                    getattr(d, 'address', ''),
+                    getattr(d, 'model', ''),
+                    str(getattr(d, 'range', 0)),
+                    getattr(d, 'serial_number', '')
+                ])
+
+            table = Table(data, colWidths=[3*cm, 5*cm, 3*cm, 5*cm])
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 12),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 1), (-1, -1), 10),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ]))
+            story.append(table)
+            story.append(Spacer(1, 20))
+
+        # Add page numbers and project info in footer
+        def footer(canvas, doc):
+            canvas.saveState()
+            canvas.setFont('Helvetica', 9)
+            # Project name in bottom left
+            canvas.drawString(cm, 0.75 * cm, project_name)
+            # Page numbers in bottom right
+            page_num = canvas.getPageNumber()
+            canvas.drawRightString(page_w - cm, 0.75 * cm, f"Page {page_num}")
+            canvas.restoreState()
+
+        # Build PDF with footer
+        doc.build(story, onFirstPage=footer, onLaterPages=footer)
