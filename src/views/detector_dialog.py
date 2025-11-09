@@ -153,7 +153,7 @@ class DetectorDialog(QDialog):
                 brand = ''
 
             if serial:
-                self.serial_edit.setText(serial)
+                self.serial_edit.setText(serial_plain)
             if model_candidate:
                 self.model_edit.setText(model_candidate)
             if brand:
