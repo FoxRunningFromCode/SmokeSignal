@@ -137,10 +137,11 @@ class DetectorDialog(QDialog):
             parts = text.split('_')
             serial = parts[0] if parts else ''
             model_candidate = None
-            for p in parts[1:]:
-                if any(c.isalpha() for c in p) and any(c.isdigit() for c in p):
-                    model_candidate = p
-                    break
+            # Collect segments that contain both letters and digits
+            candidates = [p for p in parts[1:] if any(c.isalpha() for c in p) and any(c.isdigit() for c in p)]
+            if candidates:
+                # Prefer the longest candidate (e.g. prefer "116-V-100" over "V-100")
+                model_candidate = max(candidates, key=len)
 
             # brand heuristic: dotted numeric serial
             brand = ''

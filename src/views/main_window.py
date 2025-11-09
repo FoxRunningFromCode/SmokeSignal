@@ -56,6 +56,10 @@ class MainWindow(QMainWindow):
         self.show_ranges_action.setCheckable(True)
         self.show_ranges_action.setChecked(True)
         self.show_ranges_action.toggled.connect(self._on_show_ranges_toggled)
+        
+        # Find device action
+        find_action = tools_menu.addAction("Find Device")
+        find_action.triggered.connect(self._on_find_device)
 
     def _on_add_detector_toggled(self, checked: bool):
         # Toggle add mode on the view
@@ -90,6 +94,58 @@ class MainWindow(QMainWindow):
                 pass
         except Exception:
             pass
+
+    def _on_find_device(self):
+        try:
+            text, ok = QInputDialog.getText(self, "Find Device", "Enter serial number or full address label:")
+        except Exception:
+            text, ok = ('', False)
+        if not ok or not text:
+            return
+
+        try:
+            results = self.floor_plan_controller.find_detectors(text)
+        except Exception as e:
+            QMessageBox.critical(self, "Find Error", f"Search failed: {e}")
+            return
+
+        if not results:
+            QMessageBox.information(self, "Not found", f"No detectors match '{text}'.")
+            return
+
+        if len(results) == 1:
+            try:
+                self.floor_plan_controller.highlight_detector(results[0])
+            except Exception:
+                pass
+            return
+
+        # Multiple results: ask user to pick one
+        try:
+            items = []
+            for d in results:
+                lbl = ''
+                try:
+                    lbl = d.get_full_address_label() or ''
+                except Exception:
+                    lbl = ''
+                desc = f"{getattr(d, 'serial_number', '')} - {lbl}"
+                items.append(desc)
+            choice, ok2 = QInputDialog.getItem(self, "Multiple matches", "Select detector:", items, 0, False)
+            if not ok2:
+                return
+            idx = items.index(choice)
+            sel = results[idx]
+            try:
+                self.floor_plan_controller.highlight_detector(sel)
+            except Exception:
+                pass
+        except Exception:
+            # fallback: highlight first
+            try:
+                self.floor_plan_controller.highlight_detector(results[0])
+            except Exception:
+                pass
     
     def new_project(self):
         # Ask for a project name

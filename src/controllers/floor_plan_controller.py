@@ -6,6 +6,7 @@ from views.floor_plan_view import FloorPlanView
 import json
 from pathlib import Path
 from PyQt6.QtCore import QPointF
+from PyQt6.QtCore import QTimer
 import base64
 import math
 
@@ -286,6 +287,71 @@ class FloorPlanController:
             pass
         return detector
 
+    def find_detectors(self, query):
+        """Find detectors matching a serial number, full address label, or containing the query.
+
+        Returns a list of detector objects (may be empty).
+        """
+        q = (str(query) or '').strip()
+        if not q:
+            return []
+        ql = q.lower()
+        results = []
+        for d in self.detectors:
+            try:
+                sn = (getattr(d, 'serial_number', '') or '')
+                full = ''
+                try:
+                    full = d.get_full_address_label() or ''
+                except Exception:
+                    full = ''
+                room = (getattr(d, 'room_id', '') or '')
+
+                if q == sn or q == full:
+                    results.append(d)
+                    continue
+                if ql in sn.lower() or ql in full.lower() or ql in room.lower():
+                    results.append(d)
+            except Exception:
+                continue
+        return results
+
+    def highlight_detector(self, detector, duration_ms=1500):
+        """Center on and temporarily highlight a detector.
+
+        Sets the detector as selected, centers the view on it, and briefly changes
+        its brush color before restoring the original.
+        """
+        try:
+            # center view
+            try:
+                self.view.centerOn(detector)
+            except Exception:
+                pass
+
+            # select
+            try:
+                detector.setSelected(True)
+            except Exception:
+                pass
+
+            # temporarily change brush
+            try:
+                orig_brush = detector.brush()
+                detector.setBrush(QBrush(QColor(255, 255, 0)))
+
+                def _restore():
+                    try:
+                        detector.setBrush(orig_brush)
+                    except Exception:
+                        pass
+
+                QTimer.singleShot(duration_ms, _restore)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def add_line(self, start_detector, end_detector):
         """Add a visual line connecting two detectors and track it."""
         from PyQt6.QtWidgets import QGraphicsLineItem
@@ -479,7 +545,7 @@ class FloorPlanController:
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4, landscape
         from reportlab.lib.units import cm
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, PageBreak
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.pdfbase import pdfmetrics
         from reportlab.pdfbase.ttfonts import TTFont
@@ -517,17 +583,17 @@ class FloorPlanController:
                 # if the dialog cannot be shown, continue
                 pass
 
-        # Project Info
+        # Front page: project/title/metadata + optional logo
         title_style = ParagraphStyle(
             'CustomTitle',
             parent=styles['Heading1'],
-            fontSize=24,
-            spaceAfter=30
+            fontSize=32,
+            spaceAfter=20
         )
         project_name = getattr(self.parent, 'project_name', 'Untitled Project')
-        story.append(Paragraph(f"Project: {project_name}", title_style))
+        story.append(Paragraph(f"{project_name}", title_style))
 
-        # Add current date
+        # Add current date and calibration/project metadata
         date_style = ParagraphStyle(
             'DateStyle',
             parent=styles['Normal'],
@@ -535,9 +601,44 @@ class FloorPlanController:
             textColor=colors.gray
         )
         story.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", date_style))
-        story.append(Spacer(1, 20))
 
-        # Floor Plan
+        # Calibration/scale info
+        try:
+            scale_info = ''
+            if isinstance(self.scale, (int, float)) and float(self.scale) > 0:
+                scale_info = f"Scale: {self.scale:.6f} meters/pixel"
+            else:
+                scale_info = f"Scale: {str(self.scale)}"
+            story.append(Paragraph(scale_info, styles['Normal']))
+        except Exception:
+            pass
+
+        # Project floorplan path and detector count
+        try:
+            fp = getattr(self, 'floorplan_path', None) or ''
+            story.append(Paragraph(f"Floorplan: {fp}", styles['Normal']))
+        except Exception:
+            pass
+        try:
+            story.append(Paragraph(f"Detectors: {len(self.detectors)}", styles['Normal']))
+        except Exception:
+            pass
+
+        # Optional logo (look in repository resources/logo.png)
+        try:
+            logo_path = Path('resources') / 'logo.png'
+            if logo_path.exists():
+                logo_img = Image(str(logo_path))
+                logo_img.drawWidth = 4 * cm
+                logo_img.drawHeight = 4 * cm
+                story.append(Spacer(1, 12))
+                story.append(logo_img)
+        except Exception:
+            pass
+
+        story.append(PageBreak())
+
+        # Floor Plan (on its own page)
         if hasattr(self, 'floor_plan_item') and self.floor_plan_item:
             # Create QImage from the scene. QImage requires integer dimensions.
             scene_rect = self.scene.sceneRect()
@@ -586,14 +687,18 @@ class FloorPlanController:
         for bus in bus_groups.values():
             bus.sort(key=lambda d: getattr(d, 'address', ''))
 
-        # Create detector tables for each bus with new column order
-        for bus_num in sorted(bus_groups.keys()):
+        # Create detector tables for each bus; each bus starts on a new page
+        for bus_index, bus_num in enumerate(sorted(bus_groups.keys())):
+            # Start each bus on a new page (skip before the first bus since the floor plan already had its page)
+            
+            story.append(PageBreak())
+
             # Bus header
             story.append(Paragraph(f"Bus {bus_num}", styles['Heading2']))
             story.append(Spacer(1, 10))
 
-            # Detector table with columns: Bus, Group, Address, Full address label, Serial number, Room ID, QR data, Type
-            header = ['Bus', 'Group', 'Address', 'Full\naddress', 'Serial number', 'Room ID', 'QR data', 'Type']
+            # Detector table with columns: Full address label, Serial number, Room ID, QR data, Paired Detector SN, Type
+            header = ['Full\naddress', 'Serial number', 'Room ID', 'QR data', 'Paired\nDetector SN', 'Type']
             data = [header]
             for d in bus_groups[bus_num]:
                 full_label = ''
@@ -605,20 +710,18 @@ class FloorPlanController:
                 qr_para = Paragraph((getattr(d, 'qr_data', '') or '').replace('\n', '<br />'), styles['Normal'])
 
                 row = [
-                    str(bus_num),
-                    getattr(d, 'group', ''),
-                    getattr(d, 'address', ''),
                     full_label,
                     getattr(d, 'serial_number', ''),
                     getattr(d, 'room_id', ''),
                     qr_para,
+                    getattr(d, 'paired_sn', ''),
                     getattr(d, 'device_type', 'Detector')
                 ]
                 data.append(row)
 
-            # Choose reasonable column widths (sum should fit A4 landscape content area)
-            colWidths = [1*cm, 1.8*cm, 2.2*cm, 2*cm, 6*cm, 3*cm, 6*cm, 2*cm]
-            table = Table(data, colWidths=colWidths)
+            # Column widths: allocate space to QR data and Paired SN where Bus/Group/Address used to be
+            colWidths = [2*cm, 4.5*cm, 3*cm, 8*cm, 3.5*cm, 2*cm]
+            table = Table(data, colWidths=colWidths, repeatRows=1)
             table.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -630,8 +733,9 @@ class FloorPlanController:
                 ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
                 ('FONTSIZE', (0, 1), (-1, -1), 10),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                ('ALIGN', (0, 0), (4, -1), 'CENTER'),
-                ('ALIGN', (5, 0), (5, -1), 'CENTER'),
+                ('ALIGN', (0, 0), (1, -1), 'CENTER'),
+                ('ALIGN', (2, 0), (2, -1), 'CENTER'),
+                ('ALIGN', (4, 0), (4, -1), 'CENTER'),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ]))
             story.append(table)
