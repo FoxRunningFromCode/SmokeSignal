@@ -1,7 +1,8 @@
 from PyQt6.QtWidgets import QGraphicsScene, QGraphicsView, QInputDialog, QMessageBox
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPainter, QPen, QBrush, QColor
-from models.smoke_detector import SmokeDetector
+from PyQt6 import QtCore
+from models.smoke_detector import SmokeDetector, IOBox, CallPoint
 from views.floor_plan_view import FloorPlanView
 import json
 from pathlib import Path
@@ -29,41 +30,68 @@ class FloorPlanController:
         self._calibrating = False
         self._calibration_points = []
         
-        # Setup view properties
-        self.view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # Track current device type being added
+        self._device_type_to_add = "Detector"
         self.view.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
         self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.view.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
 
-        # Connect view's add-detector signal to the controller
+        # Connect view's calibration signal to the controller
         try:
-            self.view.add_detector_requested.connect(self.add_detector)
             self.view.calibration_point_requested.connect(self._on_calibration_point)
         except Exception:
             # Defensive: if the view doesn't have the signal (older versions), ignore
             pass
     
-    def load_floor_plan(self, image_path):
+    def load_floor_plan(self, image_path, pdf_page=None):
+        """Load a floor plan from an image or PDF file.
+        
+        Args:
+            image_path: Path to image file, PDF file, or raw image bytes
+            pdf_page: If image_path is a PDF, the page number to load (0-based)
+        """
         from PyQt6.QtGui import QPixmap
         from PyQt6.QtWidgets import QGraphicsPixmapItem
+        from pathlib import Path
 
         pix = QPixmap()
-        # image_path may be bytes (already decoded) or a filesystem path
+        
+        # Handle different input types
         if isinstance(image_path, (bytes, bytearray)):
+            # Raw image data
             loaded = pix.loadFromData(bytes(image_path))
             if not loaded:
                 raise ValueError("Could not load image from binary data")
             self.floorplan_path = None
             self.floorplan_blob = bytes(image_path)
+            self.pdf_page = None
         else:
-            # assume a path-like string
-            pix = QPixmap(str(image_path))
-            if pix.isNull():
-                raise ValueError(f"Could not load image: {image_path}")
-            self.floorplan_path = str(image_path)
-            self.floorplan_blob = None
+            # Path-like input - check for PDF
+            path = Path(str(image_path))
+            if path.suffix.lower() == '.pdf':
+                # Convert PDF page to PNG
+                from utils import pdf_tools
+                png_data = pdf_tools.pdf_page_to_pixmap(str(path), pdf_page or 0)
+                if not pix.loadFromData(png_data):
+                    raise ValueError(f"Failed to convert PDF page to image: {image_path}")
+                self.floorplan_path = str(image_path)
+                self.floorplan_blob = png_data
+                self.pdf_page = pdf_page
+            else:
+                # Regular image file - store its content for portability
+                pix = QPixmap(str(image_path))
+                if pix.isNull():
+                    raise ValueError(f"Could not load image: {image_path}")
+                # Save the image data to ensure project portability
+                ba = QtCore.QByteArray()
+                buffer = QtCore.QBuffer(ba)
+                buffer.open(QtCore.QBuffer.OpenModeFlag.WriteOnly)
+                pix.save(buffer, "PNG")
+                self.floorplan_blob = bytes(ba.data())
+                self.floorplan_path = str(image_path)
+                self.pdf_page = None
 
         # Remove any existing floor plan items
         for item in list(self.scene.items()):
@@ -88,18 +116,19 @@ class FloorPlanController:
             "floorplan_path": getattr(self, 'floorplan_path', None),
             "floorplan_blob": None,
             "floorplan_name": None,
+            "pdf_page": getattr(self, 'pdf_page', None),
             "scale": self.scale,
             "detectors": [],
             "lines": [],
         }
 
-        # If we have an embedded image blob, include it base64-encoded
+        # Always include the image blob if we have one (ensures project portability)
         if getattr(self, 'floorplan_blob', None):
             data['floorplan_blob'] = base64.b64encode(self.floorplan_blob).decode('ascii')
             data['floorplan_name'] = Path(getattr(self, 'floorplan_path', '') or '').name or None
-        else:
-            # If we have only a path, include the path
-            data['floorplan_path'] = getattr(self, 'floorplan_path', None)
+            
+        # Include original path for reference
+        data['floorplan_path'] = getattr(self, 'floorplan_path', None)
 
         # Collect detectors
         for d in self.detectors:
@@ -142,27 +171,32 @@ class FloorPlanController:
             except Exception:
                 pass
 
-        # Load floorplan if present
-        # Load floorplan: prefer embedded blob, fall back to path
+        # Load floorplan
+        # If we have an embedded image blob, use it directly
         if data.get('floorplan_blob'):
             try:
                 blob = base64.b64decode(data['floorplan_blob'])
-                # load directly from bytes
+                # Keep original path for reference
+                self.floorplan_path = data.get('floorplan_path')
                 try:
-                    self.load_floor_plan(blob)
+                    # Load the blob with PDF page if specified
+                    self.load_floor_plan(blob, data.get('pdf_page'))
                 except Exception:
-                    # fallback: write to temp file? For now ignore
+                    # Just store the blob if loading fails
                     self.floorplan_blob = blob
+                    self.pdf_page = data.get('pdf_page')
             except Exception:
                 pass
         else:
+            # No blob, try to load from path
             fp = data.get('floorplan_path')
             if fp:
                 self.floorplan_path = fp
                 try:
-                    self.load_floor_plan(fp)
+                    # Load from file with PDF page if specified
+                    self.load_floor_plan(fp, data.get('pdf_page'))
                 except Exception:
-                    # ignore load errors here; caller may handle
+                    # Path load failed - ignore, caller may handle
                     pass
 
         # Set scale
@@ -177,22 +211,27 @@ class FloorPlanController:
             try:
                 x = float(item.get('x', 0))
                 y = float(item.get('y', 0))
-                d = self.add_detector(QPointF(x, y))
+                # Get device type and create the appropriate object
+                dev_type = item.get('device_type', 'Detector')
+                d = self.add_detector(QPointF(x, y), dev_type)
                 d.model = item.get('model', '')
                 d.bus_number = item.get('bus_number', '')
                 d.group = item.get('group', '')
                 d.address = item.get('address', '')
                 d.room_id = item.get('room_id', '')
-                d.device_type = item.get('device_type', 'Detector')
                 d.serial_number = item.get('serial_number', '')
                 d.qr_data = item.get('qr_data', '')
                 d.brand = item.get('brand', '')
-                d.paired_sn = item.get('paired_sn', '')
-                r = item.get('range', 0)
-                try:
-                    self.set_detector_range(d, float(r))
-                except Exception:
-                    d.set_range(r, pixels_per_meter=None)
+                # paired_sn only for detectors
+                if hasattr(d, 'paired_sn'):
+                    d.paired_sn = item.get('paired_sn', '')
+                # range only for detectors
+                if hasattr(d, 'range'):
+                    r = item.get('range', 0)
+                    try:
+                        self.set_detector_range(d, float(r))
+                    except Exception:
+                        d.set_range(r, pixels_per_meter=None)
                 try:
                     d.update_address_label()
                 except Exception:
@@ -276,16 +315,29 @@ class FloorPlanController:
 
         return errors, warnings
     
-    def add_detector(self, pos):
-        detector = SmokeDetector(pos, controller=self)
-        self.detectors.append(detector)
-        self.scene.addItem(detector)
+    def add_detector(self, pos, device_type="Detector"):
+        """Add a device at the given position.
+        
+        Args:
+            pos: QPointF position
+            device_type: "Detector", "IO", or "CallPoint"
+        """
+        if device_type == "IO":
+            device = IOBox(pos, controller=self)
+        elif device_type == "CallPoint":
+            device = CallPoint(pos, controller=self)
+        else:
+            # Default to smoke detector
+            device = SmokeDetector(pos, controller=self)
+        
+        self.detectors.append(device)
+        self.scene.addItem(device)
         # update coloring for serial uniqueness
         try:
             self.update_detector_colors()
         except Exception:
             pass
-        return detector
+        return device
 
     def find_detectors(self, query):
         """Find detectors matching a serial number, full address label, or containing the query.
@@ -320,7 +372,7 @@ class FloorPlanController:
         """Center on and temporarily highlight a detector.
 
         Sets the detector as selected, centers the view on it, and briefly changes
-        its brush color before restoring the original.
+        its brush color and pen (outline) before restoring the original.
         """
         try:
             # center view
@@ -335,14 +387,21 @@ class FloorPlanController:
             except Exception:
                 pass
 
-            # temporarily change brush
+            # temporarily change brush and pen for highlight
             try:
                 orig_brush = detector.brush()
+                orig_pen = detector.pen()
+                
+                # Set bright yellow background with thick black outline
                 detector.setBrush(QBrush(QColor(255, 255, 0)))
+                highlight_pen = QPen(QColor(0, 0, 0))
+                highlight_pen.setWidth(3)
+                detector.setPen(highlight_pen)
 
                 def _restore():
                     try:
                         detector.setBrush(orig_brush)
+                        detector.setPen(orig_pen)
                     except Exception:
                         pass
 

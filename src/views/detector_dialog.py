@@ -6,19 +6,28 @@ from PyQt6.QtCore import Qt
 class DetectorDialog(QDialog):
     def __init__(self, detector, controller=None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Detector Properties")
+        
+        # Set window title based on device type
+        device_type = getattr(detector, 'device_type', 'Device')
+        self.setWindowTitle(f"{device_type} Properties")
+        
         self.detector = detector
         self.controller = controller
+        
+        # Check if this is a detector with range capability
+        self.has_range = hasattr(detector, 'range')
 
         layout = QFormLayout(self)
-        # Range (first)
-        self.range_spin = QDoubleSpinBox(self)
-        self.range_spin.setRange(0.0, 25.0)
-        self.range_spin.setSingleStep(0.1)
-        self.range_spin.setSuffix(" m")
-        # default to detector value or 6.2m
-        self.range_spin.setValue(getattr(detector, 'range', 6.2) or 6.2)
-        layout.addRow("Range:", self.range_spin)
+        
+        # Range (only for detectors)
+        self.range_spin = None
+        if self.has_range:
+            self.range_spin = QDoubleSpinBox(self)
+            self.range_spin.setRange(0.0, 25.0)
+            self.range_spin.setSingleStep(0.1)
+            self.range_spin.setSuffix(" m")
+            self.range_spin.setValue(getattr(detector, 'range', 6.2) or 6.2)
+            layout.addRow("Range:", self.range_spin)
 
         # QR data (scanned) - second
         self.qr_edit = QLineEdit(self)
@@ -61,16 +70,19 @@ class DetectorDialog(QDialog):
         self.model_edit.setText(getattr(detector, 'model', ''))
         layout.addRow("Model:", self.model_edit)
 
-        # Paired detector serial (last)
-        self.paired_edit = QLineEdit(self)
-        self.paired_edit.setText(getattr(detector, 'paired_sn', ''))
-        layout.addRow("Paired detector SN:", self.paired_edit)
+        # Paired detector serial (only for detectors)
+        self.paired_edit = None
+        if hasattr(detector, 'paired_sn'):
+            self.paired_edit = QLineEdit(self)
+            self.paired_edit.setText(getattr(detector, 'paired_sn', ''))
+            layout.addRow("Paired detector SN:", self.paired_edit)
 
-        # Informational label for range visualization
-        info = QLabel(self)
-        info.setText("If the project has not been calibrated for pixels-per-meter, the range circle may not be shown correctly.")
-        info.setWordWrap(True)
-        layout.addRow(info)
+        # Informational label for range visualization (only if detector has range)
+        if self.has_range:
+            info = QLabel(self)
+            info.setText("If the project has not been calibrated for pixels-per-meter, the range circle may not be shown correctly.")
+            info.setWordWrap(True)
+            layout.addRow(info)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         buttons.accepted.connect(self.accept)
@@ -78,10 +90,9 @@ class DetectorDialog(QDialog):
         layout.addRow(buttons)
 
     def accept(self) -> None:
-        # Apply changes to the detector
+        # Apply changes to the device
         try:
             self.detector.model = self.model_edit.text()
-            new_range = float(self.range_spin.value())
             self.detector.bus_number = self.bus_edit.text()
             self.detector.address = self.address_edit.text()
             self.detector.room_id = self.room_edit.text()
@@ -89,18 +100,23 @@ class DetectorDialog(QDialog):
             self.detector.group = self.group_edit.text()
             self.detector.qr_data = self.qr_edit.text()
             self.detector.brand = self.brand_edit.text()
-            self.detector.paired_sn = self.paired_edit.text()
-
-            # If a controller is provided, ask it to set the detector range so
-            # it can compute pixels-per-meter. Otherwise, set without drawing.
-            if self.controller is not None:
-                try:
-                    self.controller.set_detector_range(self.detector, new_range)
-                except Exception:
-                    # fallback
+            
+            # Only apply range and paired_sn if the device supports them
+            if self.has_range and self.range_spin is not None:
+                new_range = float(self.range_spin.value())
+                # If a controller is provided, ask it to set the detector range so
+                # it can compute pixels-per-meter. Otherwise, set without drawing.
+                if self.controller is not None:
+                    try:
+                        self.controller.set_detector_range(self.detector, new_range)
+                    except Exception:
+                        # fallback
+                        self.detector.set_range(new_range, pixels_per_meter=None)
+                else:
                     self.detector.set_range(new_range, pixels_per_meter=None)
-            else:
-                self.detector.set_range(new_range, pixels_per_meter=None)
+            
+            if self.paired_edit is not None:
+                self.detector.paired_sn = self.paired_edit.text()
 
             # Update colors (unique serial numbers -> green) and ranges
             try:
@@ -111,7 +127,7 @@ class DetectorDialog(QDialog):
                         self.controller.update_range_visibility()
                     except Exception:
                         pass
-                # update detector address label
+                # update device address label
                 try:
                     self.detector.update_address_label()
                 except Exception:

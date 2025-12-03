@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QMainWindow, QVBoxLayout, QWidget, QMenuBar, QMenu, QFileDialog, QInputDialog, QMessageBox
+from PyQt6.QtWidgets import QMainWindow, QVBoxLayout, QWidget, QMenuBar, QMenu, QFileDialog, QInputDialog, QMessageBox, QDialog
 from PyQt6.QtCore import Qt
 from controllers.floor_plan_controller import FloorPlanController
 import json
@@ -18,6 +18,15 @@ class MainWindow(QMainWindow):
         # Initialize floor plan controller
         self.floor_plan_controller = FloorPlanController(self)
         layout.addWidget(self.floor_plan_controller.view)
+        
+        # Track which device type is currently being added
+        self.device_type_to_add = "Detector"
+        
+        # Connect the add_detector_requested signal from the view to our method
+        try:
+            self.floor_plan_controller.view.add_detector_requested.connect(self._on_add_device_requested)
+        except Exception:
+            pass
         
         # Create menu bar
         self.create_menu_bar()
@@ -42,9 +51,26 @@ class MainWindow(QMainWindow):
 
         # Tools menu for interactive modes
         tools_menu = menubar.addMenu("Tools")
-        self.add_detector_action = tools_menu.addAction("Add Detector Mode")
-        self.add_detector_action.setCheckable(True)
-        self.add_detector_action.toggled.connect(self._on_add_detector_toggled)
+        
+        # Device type selection (Detector, IO, Call Point)
+        devices_menu = tools_menu.addMenu("Add Device")
+        self.detector_action = devices_menu.addAction("Smoke Detector")
+        self.detector_action.setCheckable(True)
+        self.detector_action.setChecked(True)
+        self.detector_action.triggered.connect(self._on_select_device_type)
+        
+        self.io_action = devices_menu.addAction("IO Box")
+        self.io_action.setCheckable(True)
+        self.io_action.triggered.connect(self._on_select_device_type)
+        
+        self.callpoint_action = devices_menu.addAction("Call Point")
+        self.callpoint_action.setCheckable(True)
+        self.callpoint_action.triggered.connect(self._on_select_device_type)
+        
+        self.add_device_action = tools_menu.addAction("Add Device Mode")
+        self.add_device_action.setCheckable(True)
+        self.add_device_action.toggled.connect(self._on_add_device_toggled)
+        
         self.add_line_action = tools_menu.addAction("Add Line Mode")
         self.add_line_action.setCheckable(True)
         self.add_line_action.toggled.connect(self._on_add_line_toggled)
@@ -61,12 +87,46 @@ class MainWindow(QMainWindow):
         find_action = tools_menu.addAction("Find Device")
         find_action.triggered.connect(self._on_find_device)
 
+    def _on_select_device_type(self):
+        """Handle device type selection from menu."""
+        if self.sender() == self.detector_action:
+            self.device_type_to_add = "Detector"
+            self.io_action.setChecked(False)
+            self.callpoint_action.setChecked(False)
+            self.detector_action.setChecked(True)
+        elif self.sender() == self.io_action:
+            self.device_type_to_add = "IO"
+            self.detector_action.setChecked(False)
+            self.callpoint_action.setChecked(False)
+            self.io_action.setChecked(True)
+        elif self.sender() == self.callpoint_action:
+            self.device_type_to_add = "CallPoint"
+            self.detector_action.setChecked(False)
+            self.io_action.setChecked(False)
+            self.callpoint_action.setChecked(True)
+    
+    def _on_add_device_toggled(self, checked: bool):
+        """Toggle add-device mode on the view."""
+        try:
+            self.floor_plan_controller.view.set_add_mode(checked)
+            # Set device type on controller
+            self.floor_plan_controller._device_type_to_add = self.device_type_to_add
+        except Exception:
+            pass
+
     def _on_add_detector_toggled(self, checked: bool):
-        # Toggle add mode on the view
+        # Legacy - for backwards compatibility if needed
         try:
             self.floor_plan_controller.view.set_add_mode(checked)
         except Exception:
             pass
+    
+    def _on_add_device_requested(self, pos):
+        """Handle add device request from the view."""
+        try:
+            self.floor_plan_controller.add_detector(pos, self.device_type_to_add)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to add device: {e}")
 
     def _on_add_line_toggled(self, checked: bool):
         try:
@@ -153,15 +213,26 @@ class MainWindow(QMainWindow):
         if not ok or not name:
             return
 
-        # Ask user to select a floor plan image
+        # Ask user to select a floor plan image or PDF
         image_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Select floor plan image",
+            "Select floor plan image or PDF",
             "",
-            "Image Files (*.png *.jpg *.jpeg *.bmp);;All Files (*)"
+            "Floor Plan Files (*.png *.jpg *.jpeg *.bmp *.pdf);;Image Files (*.png *.jpg *.jpeg *.bmp);;PDF Files (*.pdf);;All Files (*)"
         )
         if not image_path:
-            QMessageBox.information(self, "No image selected", "Project was created without a floor plan image.")
+            QMessageBox.information(self, "No file selected", "Project was created without a floor plan.")
+            return
+
+        pdf_page = None
+        if Path(image_path).suffix.lower() == '.pdf':
+            # Show PDF page selector dialog
+            from .pdf_page_dialog import PDFPageSelector
+            dialog = PDFPageSelector(image_path, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                QMessageBox.information(self, "Cancelled", "PDF page selection was cancelled.")
+                return
+            pdf_page = dialog.get_selected_page()
 
         # Ask for drawing scale (accepts formats like "1:100" or a numeric value)
         scale_text, ok = QInputDialog.getText(self, "Drawing Scale", "Enter drawing scale (e.g. 1:100) or meters-per-pixel (numeric):")
@@ -176,7 +247,7 @@ class MainWindow(QMainWindow):
         # Try to load the floor plan into the controller (if provided)
         if image_path:
             try:
-                self.floor_plan_controller.load_floor_plan(image_path)
+                self.floor_plan_controller.load_floor_plan(image_path, pdf_page)
             except Exception as e:
                 QMessageBox.critical(self, "Load error", f"Failed to load floor plan: {e}")
 
