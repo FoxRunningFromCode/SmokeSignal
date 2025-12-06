@@ -88,6 +88,17 @@ class BaseDevice(QGraphicsItem):
             except Exception:
                 pass
 
+            # Background rect for the room label to improve readability on busy floorplans
+            try:
+                self.room_label_bg = QGraphicsRectItem(parent=self)
+                self.room_label_bg.setBrush(QBrush(QColor(240, 240, 240, 230)))
+                self.room_label_bg.setPen(QPen(Qt.PenStyle.NoPen))
+                # sit just below the label
+                self.room_label_bg.setZValue(2.5)
+                self.room_label_bg.setVisible(False)
+            except Exception:
+                self.room_label_bg = None
+
             # Address label shown below room label
             self.address_label = QGraphicsTextItem("", parent=self)
             self.address_label.setDefaultTextColor(QColor(0, 0, 0))
@@ -116,6 +127,16 @@ class BaseDevice(QGraphicsItem):
                 self.address_label.setPos(-64, y_off)
             except Exception:
                 pass
+
+            # Background rect for the address label
+            try:
+                self.address_label_bg = QGraphicsRectItem(parent=self)
+                self.address_label_bg.setBrush(QBrush(QColor(240, 240, 240, 230)))
+                self.address_label_bg.setPen(QPen(Qt.PenStyle.NoPen))
+                self.address_label_bg.setZValue(2.5)
+                self.address_label_bg.setVisible(False)
+            except Exception:
+                self.address_label_bg = None
         except Exception:
             self.room_label = None
             self.address_label = None
@@ -137,6 +158,35 @@ class BaseDevice(QGraphicsItem):
         """Paint method - child items (background rect and pixmap) handle the actual drawing."""
         # Nothing to paint at this level; child items handle drawing
         pass
+
+    def itemChange(self, change, value):
+        """Respond to position changes so controller can update dependent visuals.
+
+        Use ItemPositionHasChanged so updates occur after the item has been dropped
+        (positions are finalized). Update manual lines and auto arrows via the
+        controller if available.
+        """
+        try:
+            if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged and self.scene():
+                if self.controller is not None:
+                    # update manual lines (if controller tracks them)
+                    try:
+                        for line in getattr(self.controller, 'lines', []):
+                            if line.get('start') is self or line.get('end') is self:
+                                s_pos = line['start'].pos()
+                                e_pos = line['end'].pos()
+                                line['item'].setLine(s_pos.x(), s_pos.y(), e_pos.x(), e_pos.y())
+                    except Exception:
+                        pass
+                    # update auto arrows if controller supports it
+                    try:
+                        if hasattr(self.controller, 'update_address_arrows'):
+                            self.controller.update_address_arrows()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        return super().itemChange(change, value)
 
     def mousePressEvent(self, event):
         """Handle selection and editing - right-click menu, line mode."""
@@ -222,9 +272,27 @@ class BaseDevice(QGraphicsItem):
                     if room:
                         self.room_label.setPlainText(room)
                         self.room_label.setVisible(True)
+                        # update background rect for room label
+                        try:
+                            if getattr(self, 'room_label_bg', None):
+                                br = self.room_label.boundingRect()
+                                pad = 4
+                                x = self.room_label.pos().x() + br.x() - pad
+                                y = self.room_label.pos().y() + br.y() - pad
+                                w = br.width() + pad * 2
+                                h = br.height() + pad * 2
+                                self.room_label_bg.setRect(x, y, w, h)
+                                self.room_label_bg.setVisible(True)
+                        except Exception:
+                            pass
                     else:
                         self.room_label.setPlainText("")
                         self.room_label.setVisible(False)
+                        try:
+                            if getattr(self, 'room_label_bg', None):
+                                self.room_label_bg.setVisible(False)
+                        except Exception:
+                            pass
             except Exception:
                 pass
 
@@ -242,6 +310,19 @@ class BaseDevice(QGraphicsItem):
                     if getattr(self, 'address_label', None):
                         self.address_label.setPlainText(label)
                         self.address_label.setVisible(True)
+                        # update background rect for address label
+                        try:
+                            if getattr(self, 'address_label_bg', None):
+                                br = self.address_label.boundingRect()
+                                pad = 4
+                                x = self.address_label.pos().x() + br.x() - pad
+                                y = self.address_label.pos().y() + br.y() - pad
+                                w = br.width() + pad * 2
+                                h = br.height() + pad * 2
+                                self.address_label_bg.setRect(x, y, w, h)
+                                self.address_label_bg.setVisible(True)
+                        except Exception:
+                            pass
                 except Exception:
                     pass
             else:
@@ -250,6 +331,11 @@ class BaseDevice(QGraphicsItem):
                     if getattr(self, 'address_label', None):
                         self.address_label.setPlainText("")
                         self.address_label.setVisible(False)
+                        try:
+                            if getattr(self, 'address_label_bg', None):
+                                self.address_label_bg.setVisible(False)
+                        except Exception:
+                            pass
                 except Exception:
                     pass
                 
@@ -325,19 +411,7 @@ class SmokeDetector(BaseDevice):
         self.paired_sn = ""
         self.device_type = "Detector"
 
-    def itemChange(self, change, value):
-        """Update connected lines when detector is moved"""
-        if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange and self.scene():
-            try:
-                if self.controller:
-                    for line in self.controller.lines:
-                        if line['start'] is self or line['end'] is self:
-                            s_pos = line['start'].pos()
-                            e_pos = line['end'].pos()
-                            line['item'].setLine(s_pos.x(), s_pos.y(), e_pos.x(), e_pos.y())
-            except Exception:
-                pass
-        return super().itemChange(change, value)
+    
     
     def set_range(self, range_meters, pixels_per_meter=None):
         """Set the detection range and update the visual indicator"""

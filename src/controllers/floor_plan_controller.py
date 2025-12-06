@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QGraphicsScene, QGraphicsView, QInputDialog, QMessageBox
+from PyQt6.QtWidgets import QGraphicsScene, QGraphicsView, QInputDialog, QMessageBox, QGraphicsLineItem, QGraphicsPolygonItem
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPainter, QPen, QBrush, QColor
 from PyQt6 import QtCore
@@ -32,6 +32,15 @@ class FloorPlanController:
         
         # Track current device type being added
         self._device_type_to_add = "Detector"
+        # Whether auto-drawn address arrows should be visible
+        self.show_arrows = False
+        # Internal list of auto-created arrow items (dicts with 'line' and 'head')
+        self._auto_arrows = []
+        # Auto-addressing state for sequential placement
+        self._auto_address_enabled = False
+        self._auto_bus_raw = None
+        self._auto_group_raw = None
+        self._next_address = None
         self.view.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
         self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
@@ -329,6 +338,37 @@ class FloorPlanController:
         else:
             # Default to smoke detector
             device = SmokeDetector(pos, controller=self)
+
+        # If auto-addressing is enabled and we're adding detectors, populate
+        # bus/group/address automatically and increment the next address.
+        try:
+            if device_type == "Detector" and getattr(self, '_auto_address_enabled', False):
+                # Use raw values as stored from the dialog; address is numeric next
+                try:
+                    if self._auto_bus_raw is not None:
+                        device.bus_number = str(self._auto_bus_raw)
+                except Exception:
+                    pass
+                try:
+                    if self._auto_group_raw is not None:
+                        device.group = str(self._auto_group_raw)
+                except Exception:
+                    pass
+                try:
+                    if self._next_address is None:
+                        # initialize by scanning
+                        self.start_auto_address(self._auto_bus_raw, self._auto_group_raw)
+                    device.address = str(self._next_address)
+                    # increment for next placement
+                    try:
+                        self._next_address = int(self._next_address) + 1
+                    except Exception:
+                        # if non-numeric for some reason, disable auto addressing
+                        self.stop_auto_address()
+                except Exception:
+                    pass
+        except Exception:
+            pass
         
         self.detectors.append(device)
         self.scene.addItem(device)
@@ -520,6 +560,11 @@ class FloorPlanController:
                     d.setBrush(QBrush(QColor(255, 140, 0)))  # Orange for non-unique or empty serial
             except Exception:
                 pass
+        # Also update auto arrows based on address order/grouping
+        try:
+            self.update_address_arrows()
+        except Exception:
+            pass
 
     def update_range_visibility(self):
         """Show or hide range circles for all detectors based on controller setting."""
@@ -529,6 +574,143 @@ class FloorPlanController:
                     d.range_circle.setVisible(bool(self.show_ranges))
             except Exception:
                 pass
+
+    def update_arrow_visibility(self):
+        """Show or hide auto-drawn address arrows based on controller setting."""
+        for obj in getattr(self, '_auto_arrows', []):
+            try:
+                vis = bool(self.show_arrows)
+                obj.get('line').setVisible(vis)
+                obj.get('head').setVisible(vis)
+            except Exception:
+                pass
+
+    def set_show_arrows(self, show: bool):
+        """Toggle showing address-order arrows and update visibility.
+
+        Call with True to show arrows, False to hide them.
+        """
+        self.show_arrows = bool(show)
+        try:
+            # ensure arrows exist
+            self.update_address_arrows()
+        except Exception:
+            pass
+        try:
+            self.update_arrow_visibility()
+        except Exception:
+            pass
+
+    def update_address_arrows(self):
+        """Automatically create thin light-gray arrows between devices that share the same bus and group.
+
+        Arrows are drawn from the device with the lower numeric address to the higher one.
+        Existing auto-arrows are cleared and recreated.
+        """
+        # Clear existing auto arrows
+        try:
+            for obj in list(getattr(self, '_auto_arrows', []) or []):
+                try:
+                    if obj.get('line') is not None:
+                        self.scene.removeItem(obj.get('line'))
+                except Exception:
+                    pass
+                try:
+                    if obj.get('head') is not None:
+                        self.scene.removeItem(obj.get('head'))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self._auto_arrows = []
+
+        # Group detectors by (bus, group) and sort by address
+        groups = {}
+        for d in self.detectors:
+            try:
+                bus_raw = (getattr(d, 'bus_number', '') or '').strip()
+                group_raw = (getattr(d, 'group', '') or '').strip()
+                addr = (getattr(d, 'address', '') or '').strip()
+                if not (bus_raw and group_raw and addr):
+                    continue
+
+                # Normalize bus and group to integers when possible so '01' == '1'
+                try:
+                    bus_key = int(bus_raw)
+                except Exception:
+                    bus_key = bus_raw
+                try:
+                    group_key = int(group_raw)
+                except Exception:
+                    group_key = group_raw
+
+                # Try numeric address ordering, fall back to string
+                try:
+                    addr_val = int(addr)
+                except Exception:
+                    try:
+                        addr_val = float(addr)
+                    except Exception:
+                        addr_val = addr
+
+                groups.setdefault((bus_key, group_key), []).append((addr_val, d))
+            except Exception:
+                continue
+
+        import math
+        from PyQt6.QtGui import QPolygonF
+        from PyQt6.QtCore import QPointF
+        from PyQt6.QtWidgets import QGraphicsLineItem, QGraphicsPolygonItem
+
+        for key, items in groups.items():
+            try:
+                # sort with numeric values first, otherwise lexicographic
+                try:
+                    items_sorted = sorted(items, key=lambda x: (float(x[0]) if isinstance(x[0], (int, float)) else float('inf'), str(x[0])))
+                except Exception:
+                    items_sorted = sorted(items, key=lambda x: str(x[0]))
+            except Exception:
+                items_sorted = items
+
+            for i in range(len(items_sorted) - 1):
+                s = items_sorted[i][1]
+                e = items_sorted[i + 1][1]
+                try:
+                    sx = s.pos().x(); sy = s.pos().y()
+                    ex = e.pos().x(); ey = e.pos().y()
+                    if sx == ex and sy == ey:
+                        continue
+
+                    pen = QPen(QColor(80, 80, 80))
+                    pen.setWidth(3)
+                    line = QGraphicsLineItem(sx, sy, ex, ey)
+                    line.setPen(pen)
+                    line.setZValue(0.5)
+                    self.scene.addItem(line)
+
+                    # arrow head triangle at end
+                    dx = ex - sx; dy = ey - sy
+                    angle = math.atan2(dy, dx)
+                    hl = 16.0; hw = 8.0
+                    p1 = QPointF(ex, ey)
+                    p2 = QPointF(ex - hl * math.cos(angle) + hw * math.sin(angle), ey - hl * math.sin(angle) - hw * math.cos(angle))
+                    p3 = QPointF(ex - hl * math.cos(angle) - hw * math.sin(angle), ey - hl * math.sin(angle) + hw * math.cos(angle))
+                    poly = QPolygonF([p1, p2, p3])
+                    head = QGraphicsPolygonItem(poly)
+                    head.setBrush(QBrush(QColor(80, 80, 80)))
+                    head.setPen(QPen(Qt.PenStyle.NoPen))
+                    head.setZValue(0.5)
+                    self.scene.addItem(head)
+
+                    self._auto_arrows.append({'line': line, 'head': head, 'start': s, 'end': e})
+                except Exception:
+                    continue
+
+        # Apply visibility preference
+        try:
+            self.update_arrow_visibility()
+        except Exception:
+            pass
 
     def set_detector_range(self, detector, range_meters):
         """Set detector range in meters and update visual if possible.
@@ -598,8 +780,65 @@ class FloorPlanController:
         else:
             self.scale = meters_per_pixel
         # TODO: Update visual elements based on new scale (requires converting between pixels and meters)
+
+    def start_auto_address(self, bus_raw, group_raw):
+        """Enable auto-addressing for subsequent detector placements.
+
+        `bus_raw` and `group_raw` are strings entered by user (e.g. '01' or '1').
+        We normalize when determining numeric addresses so '01' == '1'.
+        """
+        try:
+            self._auto_address_enabled = True
+            self._auto_bus_raw = str(bus_raw) if bus_raw is not None else ''
+            self._auto_group_raw = str(group_raw) if group_raw is not None else ''
+
+            # Determine next address by scanning existing detectors
+            max_addr = 0
+            for d in self.detectors:
+                try:
+                    dbus = (getattr(d, 'bus_number', '') or '').strip()
+                    dgroup = (getattr(d, 'group', '') or '').strip()
+                    if not dbus or not dgroup:
+                        continue
+                    # normalize comparison
+                    try:
+                        if int(dbus) == int(self._auto_bus_raw) and int(dgroup) == int(self._auto_group_raw):
+                            a = getattr(d, 'address', '') or ''
+                            try:
+                                a_i = int(str(a))
+                                if a_i > max_addr:
+                                    max_addr = a_i
+                            except Exception:
+                                pass
+                    except Exception:
+                        # fallback to string compare
+                        if dbus == self._auto_bus_raw and dgroup == self._auto_group_raw:
+                            try:
+                                a_i = int(str(getattr(d, 'address', '') or ''))
+                                if a_i > max_addr:
+                                    max_addr = a_i
+                            except Exception:
+                                pass
+                except Exception:
+                    continue
+            self._next_address = max_addr + 1 if max_addr >= 0 else 1
+        except Exception:
+            # defensively disable on error
+            self._auto_address_enabled = False
+            self._auto_bus_raw = None
+            self._auto_group_raw = None
+            self._next_address = None
+
+    def stop_auto_address(self):
+        try:
+            self._auto_address_enabled = False
+            self._auto_bus_raw = None
+            self._auto_group_raw = None
+            self._next_address = None
+        except Exception:
+            pass
     
-    def export_to_pdf(self, file_path):
+    def export_to_pdf(self, file_path, include_arrows: bool = False):
         """Export the floor plan and detector details to PDF."""
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4, landscape
@@ -641,6 +880,30 @@ class FloorPlanController:
             except Exception:
                 # if the dialog cannot be shown, continue
                 pass
+
+        # Temporarily adjust arrow visibility according to include_arrows
+        orig_show_arrows = bool(getattr(self, 'show_arrows', False))
+        try:
+            if include_arrows:
+                try:
+                    self.set_show_arrows(True)
+                except Exception:
+                    self.show_arrows = True
+                    try:
+                        self.update_arrow_visibility()
+                    except Exception:
+                        pass
+            else:
+                try:
+                    self.set_show_arrows(False)
+                except Exception:
+                    self.show_arrows = False
+                    try:
+                        self.update_arrow_visibility()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
         # Front page: project/title/metadata + optional logo
         title_style = ParagraphStyle(
@@ -812,4 +1075,15 @@ class FloorPlanController:
             canvas.restoreState()
 
         # Build PDF with footer
-        doc.build(story, onFirstPage=footer, onLaterPages=footer)
+        try:
+            doc.build(story, onFirstPage=footer, onLaterPages=footer)
+        finally:
+            # Restore original arrow visibility
+            try:
+                self.set_show_arrows(orig_show_arrows)
+            except Exception:
+                try:
+                    self.show_arrows = orig_show_arrows
+                    self.update_arrow_visibility()
+                except Exception:
+                    pass
