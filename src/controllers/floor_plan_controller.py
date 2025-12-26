@@ -26,7 +26,7 @@ class FloorPlanController:
         self.scale = 1.0  # meters per pixel
         self.parent = parent
         # Whether detector range circles should be visible
-        self.show_ranges = True
+        self.show_ranges = False
         self._calibrating = False
         self._calibration_points = []
         
@@ -936,11 +936,11 @@ class FloorPlanController:
             pass
 
         # Project floorplan path and detector count
-        try:
-            fp = getattr(self, 'floorplan_path', None) or ''
-            story.append(Paragraph(f"Floorplan: {fp}", styles['Normal']))
-        except Exception:
-            pass
+        #try:
+        #    fp = getattr(self, 'floorplan_path', None) or ''
+        #    story.append(Paragraph(f"Floorplan: {fp}", styles['Normal']))
+        #except Exception:
+        #    pass
         try:
             story.append(Paragraph(f"Detectors: {len(self.detectors)}", styles['Normal']))
         except Exception:
@@ -951,8 +951,8 @@ class FloorPlanController:
             logo_path = Path('resources') / 'logo.png'
             if logo_path.exists():
                 logo_img = Image(str(logo_path))
-                logo_img.drawWidth = 4 * cm
-                logo_img.drawHeight = 4 * cm
+                logo_img.drawWidth = 5 * cm
+                logo_img.drawHeight = 5 * cm
                 story.append(Spacer(1, 12))
                 story.append(logo_img)
         except Exception:
@@ -995,7 +995,7 @@ class FloorPlanController:
             img.drawWidth = float(scene_w) * scale
             img.drawHeight = float(scene_h) * scale
             story.append(img)
-            story.append(Spacer(1, 20))
+            story.append(PageBreak())
 
         # Group detectors by bus number
         bus_groups = {}
@@ -1013,7 +1013,7 @@ class FloorPlanController:
         for bus_index, bus_num in enumerate(sorted(bus_groups.keys())):
             # Start each bus on a new page (skip before the first bus since the floor plan already had its page)
             
-            story.append(PageBreak())
+            
 
             # Bus header
             story.append(Paragraph(f"Bus {bus_num}", styles['Heading2']))
@@ -1040,6 +1040,8 @@ class FloorPlanController:
                     getattr(d, 'device_type', 'Detector')
                 ]
                 data.append(row)
+            
+           
 
             # Column widths: allocate space to QR data and Paired SN where Bus/Group/Address used to be
             colWidths = [2*cm, 4.5*cm, 3*cm, 8*cm, 3.5*cm, 2*cm]
@@ -1061,7 +1063,7 @@ class FloorPlanController:
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ]))
             story.append(table)
-            story.append(Spacer(1, 20))
+            story.append(PageBreak())
 
         # Add page numbers and project info in footer
         def footer(canvas, doc):

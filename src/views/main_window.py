@@ -56,44 +56,44 @@ class MainWindow(QMainWindow):
         export_action.triggered.connect(self.export_to_pdf)
 
         # Tools menu for interactive modes
-        tools_menu = menubar.addMenu("Tools")
+        #tools_menu = menubar.addMenu("Tools")
         
         # Device type selection (Detector, IO, Call Point)
-        devices_menu = tools_menu.addMenu("Add Device")
-        self.detector_action = devices_menu.addAction("Smoke Detector")
-        self.detector_action.setCheckable(True)
-        self.detector_action.setChecked(True)
-        self.detector_action.triggered.connect(self._on_select_device_type)
+        #devices_menu = tools_menu.addMenu("Add Device")
+        #self.detector_action = devices_menu.addAction("Smoke Detector")
+        #self.detector_action.setCheckable(True)
+        #self.detector_action.setChecked(True)
+        #self.detector_action.triggered.connect(self._on_select_device_type)
         
-        self.io_action = devices_menu.addAction("IO Box")
-        self.io_action.setCheckable(True)
-        self.io_action.triggered.connect(self._on_select_device_type)
+        #self.io_action = devices_menu.addAction("IO Box")
+        #self.io_action.setCheckable(True)
+        #self.io_action.triggered.connect(self._on_select_device_type)
         
-        self.callpoint_action = devices_menu.addAction("Call Point")
-        self.callpoint_action.setCheckable(True)
-        self.callpoint_action.triggered.connect(self._on_select_device_type)
+        #self.callpoint_action = devices_menu.addAction("Call Point")
+        #self.callpoint_action.setCheckable(True)
+        #self.callpoint_action.triggered.connect(self._on_select_device_type)
         
-        self.add_device_action = tools_menu.addAction("Add Device Mode")
-        self.add_device_action.setCheckable(True)
-        self.add_device_action.toggled.connect(self._on_add_device_toggled)
-        calibrate_action = tools_menu.addAction("Calibrate Project")
-        calibrate_action.triggered.connect(self._on_calibrate_project)
+        #self.add_device_action = tools_menu.addAction("Add Device Mode")
+        #self.add_device_action.setCheckable(True)
+        #self.add_device_action.toggled.connect(self._on_add_device_toggled)
+        #calibrate_action = tools_menu.addAction("Calibrate Project")
+        #calibrate_action.triggered.connect(self._on_calibrate_project)
 
         # Toggle to show/hide detection range circles
-        self.show_ranges_action = tools_menu.addAction("Show Range Circles")
-        self.show_ranges_action.setCheckable(True)
-        self.show_ranges_action.setChecked(False)
-        self.show_ranges_action.toggled.connect(self._on_show_ranges_toggled)
+        #self.show_ranges_action = tools_menu.addAction("Show Range Circles")
+        #self.show_ranges_action.setCheckable(True)
+        #self.show_ranges_action.setChecked(False)
+        #self.show_ranges_action.toggled.connect(self._on_show_ranges_toggled)
         
         # Toggle to show/hide address-order arrows
-        self.show_arrows_action = tools_menu.addAction("Show Address Arrows")
-        self.show_arrows_action.setCheckable(True)
-        self.show_arrows_action.setChecked(False)
-        self.show_arrows_action.toggled.connect(self._on_show_arrows_toggled)
+        #self.show_arrows_action = tools_menu.addAction("Show Address Arrows")
+        #self.show_arrows_action.setCheckable(True)
+        #self.show_arrows_action.setChecked(False)
+        #self.show_arrows_action.toggled.connect(self._on_show_arrows_toggled)
         
         # Find device action
-        find_action = tools_menu.addAction("Find Device")
-        find_action.triggered.connect(self._on_find_device)
+        #find_action = tools_menu.addAction("Find Device")
+        #find_action.triggered.connect(self._on_find_device)
 
     def _on_select_device_type(self):
         """Handle device type selection from menu."""
@@ -169,19 +169,60 @@ class MainWindow(QMainWindow):
             combo.currentIndexChanged.connect(self._on_device_type_combo_changed)
             tb.addWidget(combo)
 
-            # Reuse existing actions for range/arrows toggles if present
+            # Show ranges toggle - create toolbar action (uses src/models/RANGE_s.png)
             try:
-                tb.addAction(self.show_ranges_action)
+                range_icon_path = Path(__file__).resolve().parents[1] / 'models' / 'RANGE_s.png'
+                if range_icon_path.exists():
+                    range_icon = QIcon(str(range_icon_path))
+                else:
+                    style = QApplication.instance().style() if QApplication.instance() else QApplication.style()
+                    range_icon = style.standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation)
+            except Exception:
+                range_icon = QIcon()
+            self.show_ranges_action = QAction(range_icon, "Show Range Circles", self)
+            self.show_ranges_action.setCheckable(True)
+            # Initialize checked state from controller if available
+            try:
+                self.show_ranges_action.setChecked(bool(getattr(self.floor_plan_controller, 'show_ranges', False)))
+            except Exception:
+                self.show_ranges_action.setChecked(False)
+            self.show_ranges_action.setToolTip("Show/hide detection range circles on the plan")
+            try:
+                self.show_ranges_action.toggled.connect(self._on_show_ranges_toggled)
             except Exception:
                 pass
+            tb.addAction(self.show_ranges_action)
+
+            # Show arrows toggle - create toolbar action (uses src/models/ADDRARROW_s.png)
             try:
-                tb.addAction(self.show_arrows_action)
+                arrow_icon_path = Path(__file__).resolve().parents[1] / 'models' / 'ADDRARROW_s.png'
+                if arrow_icon_path.exists():
+                    arrow_icon = QIcon(str(arrow_icon_path))
+                else:
+                    style = QApplication.instance().style() if QApplication.instance() else QApplication.style()
+                    arrow_icon = style.standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
+            except Exception:
+                arrow_icon = QIcon()
+            self.show_arrows_action = QAction(arrow_icon, "Show Address Arrows", self)
+            self.show_arrows_action.setCheckable(True)
+            try:
+                self.show_arrows_action.setChecked(bool(getattr(self.floor_plan_controller, 'show_arrows', False)))
+            except Exception:
+                self.show_arrows_action.setChecked(False)
+            self.show_arrows_action.setToolTip("Show/hide address-order arrows on the plan")
+            try:
+                self.show_arrows_action.toggled.connect(self._on_show_arrows_toggled)
             except Exception:
                 pass
-            # Add Search tool with a standard Qt icon (temporary)
+            tb.addAction(self.show_arrows_action)
+            # Add Search tool: try loading project icon `FIND_s.png` from src/models, fallback to Qt
             try:
-                style = QApplication.instance().style() if QApplication.instance() else QApplication.style()
-                search_icon = style.standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView)
+                find_icon_path = Path(__file__).resolve().parents[1] / 'models' / 'FIND_s.png'
+                if find_icon_path.exists():
+                    search_icon = QIcon(str(find_icon_path))
+                else:
+                    style = QApplication.instance().style() if QApplication.instance() else QApplication.style()
+                    search_icon = style.standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView)
             except Exception:
                 search_icon = QIcon()
             self.search_action = QAction(search_icon, "Search", self)
@@ -193,10 +234,14 @@ class MainWindow(QMainWindow):
                 pass
             tb.addAction(self.search_action)
 
-            # Add Calibrate tool with a standard Qt icon (temporary)
+            # Add Calibrate tool: try loading project icon `CALI_S.png` from src/models, fallback to Qt
             try:
-                style = QApplication.instance().style() if QApplication.instance() else QApplication.style()
-                calib_icon = style.standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton)
+                cal_icon_path = Path(__file__).resolve().parents[1] / 'models' / 'CALI_S.png'
+                if cal_icon_path.exists():
+                    calib_icon = QIcon(str(cal_icon_path))
+                else:
+                    style = QApplication.instance().style() if QApplication.instance() else QApplication.style()
+                    calib_icon = style.standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton)
             except Exception:
                 calib_icon = QIcon()
             self.calibrate_action = QAction(calib_icon, "Calibrate", self)
