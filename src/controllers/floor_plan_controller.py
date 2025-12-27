@@ -41,6 +41,20 @@ class FloorPlanController:
         self._auto_bus_raw = None
         self._auto_group_raw = None
         self._next_address = None
+
+        # Show a small scale legend in the top-right when True
+        self.show_scale_legend = False
+
+        # Measure tool state
+        self._measuring = False
+        self._measure_points = []  # list of QPointF
+        self._measure_items = []  # list of QGraphicsItems created for measurement
+
+        # Connect view's measurement signal to the controller
+        try:
+            self.view.measure_point_requested.connect(self._on_measure_point)
+        except Exception:
+            pass
         self.view.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
         self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
@@ -544,6 +558,131 @@ class FloorPlanController:
         except Exception:
             pass
 
+    # --- Measurement and scale legend helpers ---
+    def start_measure_mode(self):
+        """Enable measure mode. Clears any existing measurement drawing."""
+        try:
+            self._measuring = True
+            self._measure_points = []
+            self.clear_measure_items()
+            try:
+                self.view.set_measure_mode(True)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def stop_measure_mode(self):
+        """Disable measure mode and remove any measurement items."""
+        try:
+            self._measuring = False
+            try:
+                self.view.set_measure_mode(False)
+            except Exception:
+                pass
+            self._measure_points = []
+            self.clear_measure_items()
+        except Exception:
+            pass
+
+    def clear_measure_items(self):
+        """Remove all graphics created for measurements from the scene."""
+        try:
+            for it in list(self._measure_items):
+                try:
+                    self.scene.removeItem(it)
+                except Exception:
+                    pass
+            self._measure_items = []
+        except Exception:
+            pass
+
+    def _on_measure_point(self, pos):
+        """Handle a clicked measure point from the view."""
+        if not self._measuring:
+            return
+        try:
+            # if already have two points, restart the measurement
+            if len(self._measure_points) >= 2:
+                self._measure_points = []
+                self.clear_measure_items()
+
+            # add the clicked point
+            self._measure_points.append(pos)
+
+            # draw a small red dot
+            from PyQt6.QtWidgets import QGraphicsEllipseItem, QGraphicsSimpleTextItem
+            from PyQt6.QtGui import QBrush, QPen, QColor
+            from PyQt6.QtCore import QRectF
+
+            r = 4.0
+            dot = QGraphicsEllipseItem(pos.x() - r, pos.y() - r, r * 2, r * 2)
+            dot.setBrush(QBrush(QColor(200, 30, 30)))
+            dot.setPen(QPen(Qt.PenStyle.NoPen))
+            dot.setZValue(10)
+            self.scene.addItem(dot)
+            self._measure_items.append(dot)
+
+            # If we now have two points, draw the connecting line and a label
+            if len(self._measure_points) == 2:
+                p1 = self._measure_points[0]
+                p2 = self._measure_points[1]
+                line_item = QGraphicsLineItem(p1.x(), p1.y(), p2.x(), p2.y())
+                pen = QPen(QColor(200, 30, 30))
+                pen.setWidth(2)
+                line_item.setPen(pen)
+                line_item.setZValue(9)
+                self.scene.addItem(line_item)
+                self._measure_items.append(line_item)
+
+                # compute distance
+                dx = p2.x() - p1.x()
+                dy = p2.y() - p1.y()
+                pix = math.hypot(dx, dy)
+                meters = None
+                if isinstance(self.scale, (int, float)) and float(self.scale) > 0:
+                    meters = pix * float(self.scale)
+
+                if meters is not None:
+                    text = f"{meters:.2f} m"
+                else:
+                    text = f"{pix:.1f} px"
+
+                # place label above midpoint with small offset perpendicular to line
+                mx = (p1.x() + p2.x()) / 2.0
+                my = (p1.y() + p2.y()) / 2.0
+                length = math.hypot(dx, dy)
+                if length > 0:
+                    nx = -dy / length
+                    ny = dx / length
+                else:
+                    nx = 0
+                    ny = -1
+                offset = 12.0
+                label_x = mx + nx * offset
+                label_y = my + ny * offset
+
+                txt_item = QGraphicsSimpleTextItem(text)
+                txt_item.setBrush(QBrush(QColor(200, 30, 30)))
+                txt_item.setZValue(11)
+                txt_item.setPos(label_x, label_y)
+                self.scene.addItem(txt_item)
+                self._measure_items.append(txt_item)
+        except Exception:
+            pass
+
+    def set_show_scale_legend(self, show: bool):
+        """Toggle the small overlay scale legend."""
+        try:
+            self.show_scale_legend = bool(show)
+            try:
+                # request view repaint
+                self.view.viewport().update()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def update_detector_colors(self):
         """Set detectors to green when their serial number is unique, otherwise red."""
         counts = {}
@@ -764,10 +903,74 @@ class FloorPlanController:
     
     def set_scale(self, meters_per_pixel):
         # The API accepts either a numeric meters_per_pixel or a string like "1:100".
+        # If a PDF is loaded and a ratio like '1:100' is supplied, attempt to auto-calibrate
+        # using the detected paper size of the PDF page.
         if isinstance(meters_per_pixel, str):
             text = meters_per_pixel.strip()
+            # Try auto-calibration when user provided a drawing ratio like 1:100
             if text.startswith("1:"):
-                # Store the ratio string for now; precise pixel-based scaling requires calibration
+                # Attempt to parse the numeric factor
+                try:
+                    factor = float(text.split(':', 1)[1])
+                except Exception:
+                    # Not a valid factor - store raw and exit
+                    self.scale = text
+                    return
+
+                # Only attempt auto-calibration if we have a PDF floorplan and page info
+                try:
+                    if getattr(self, 'floorplan_path', None) and str(self.floorplan_path).lower().endswith('.pdf') and getattr(self, 'pdf_page', None) is not None and getattr(self, 'floor_plan_item', None) is not None:
+                        from utils import pdf_tools
+                        w_m, h_m, paper_name = pdf_tools.get_pdf_page_physical_size(self.floorplan_path, self.pdf_page)
+                        if w_m is not None:
+                            # Use page width (in meters) times scale factor as real-world width
+                            real_world_width_m = float(w_m) * float(factor)
+                            try:
+                                pixel_width = float(self.floor_plan_item.pixmap().width())
+                            except Exception:
+                                pixel_width = None
+
+                            if pixel_width and pixel_width > 0:
+                                meters_per_pixel_val = real_world_width_m / pixel_width
+                                try:
+                                    self.scale = float(meters_per_pixel_val)
+                                except Exception:
+                                    self.scale = meters_per_pixel_val
+
+                                # Reapply detector ranges so circles draw correctly
+                                for d in list(self.detectors):
+                                    try:
+                                        self.set_detector_range(d, getattr(d, 'range', 0))
+                                    except Exception:
+                                        pass
+
+                                try:
+                                    QMessageBox.information(self.parent, "Auto-Calibration", f"Auto-calibrated using paper size {paper_name} at scale {text}. Computed meters-per-pixel: {self.scale:.8f}\nPlease verify detector ranges are correct.")
+                                except Exception:
+                                    pass
+                                return
+                            else:
+                                # Could not get pixel width
+                                try:
+                                    QMessageBox.information(self.parent, "Auto-Calibration", "PDF page loaded but pixel width could not be determined; manual calibration required.")
+                                except Exception:
+                                    pass
+                                self.scale = text
+                                return
+                        else:
+                            # Unknown paper size - can't auto calibrate
+                            try:
+                                QMessageBox.information(self.parent, "Auto-Calibration", "PDF page paper size not recognized; please perform manual calibration (Tools → Calibrate).")
+                            except Exception:
+                                pass
+                            self.scale = text
+                            return
+                except Exception:
+                    # Any error during auto calibration we fallback to storing the raw text
+                    self.scale = text
+                    return
+
+                # Fallback: store the ratio string if nothing else applies
                 self.scale = text
                 return
             else:

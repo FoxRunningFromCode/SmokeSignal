@@ -252,6 +252,39 @@ class MainWindow(QMainWindow):
                 pass
             tb.addAction(self.calibrate_action)
 
+            # Add Scale Legend toggle
+            try:
+                scale_icon = QIcon()
+                self.scale_legend_action = QAction(scale_icon, "Show Scale", self)
+                self.scale_legend_action.setCheckable(True)
+                # Initialize state from controller if available
+                try:
+                    self.scale_legend_action.setChecked(bool(getattr(self.floor_plan_controller, 'show_scale_legend', False)))
+                except Exception:
+                    self.scale_legend_action.setChecked(False)
+                self.scale_legend_action.setToolTip("Show/hide small scale legend on the floor plan")
+                try:
+                    self.scale_legend_action.toggled.connect(self._on_toggle_scale_legend)
+                except Exception:
+                    pass
+                tb.addAction(self.scale_legend_action)
+            except Exception:
+                pass
+
+            # Add Measure tool (click two points to measure distance)
+            try:
+                measure_icon = QIcon()
+                self.measure_action = QAction(measure_icon, "Measure", self)
+                self.measure_action.setCheckable(True)
+                self.measure_action.setToolTip("Measure distance between two points (click to start, click a second time to finish)")
+                try:
+                    self.measure_action.toggled.connect(self._on_measure_toggled)
+                except Exception:
+                    pass
+                tb.addAction(self.measure_action)
+            except Exception:
+                pass
+
             # Set a sensible default icon size for the toolbar (icon-ready)
             try:
                 tb.setIconSize(QSize(24, 24))
@@ -335,6 +368,38 @@ class MainWindow(QMainWindow):
                     self.floor_plan_controller.update_arrow_visibility()
                 except Exception:
                     pass
+        except Exception:
+            pass
+
+    def _on_toggle_scale_legend(self, checked: bool):
+        try:
+            try:
+                self.floor_plan_controller.set_show_scale_legend(bool(checked))
+            except Exception:
+                self.floor_plan_controller.show_scale_legend = bool(checked)
+                try:
+                    self.floor_plan_controller.view.viewport().update()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _on_measure_toggled(self, checked: bool):
+        try:
+            if checked:
+                try:
+                    self.floor_plan_controller.start_measure_mode()
+                except Exception as e:
+                    QMessageBox.critical(self, "Measure Error", f"Failed to start measure mode: {e}")
+                    try:
+                        self.sender().setChecked(False)
+                    except Exception:
+                        pass
+            else:
+                try:
+                    self.floor_plan_controller.stop_measure_mode()
+                except Exception as e:
+                    QMessageBox.critical(self, "Measure Error", f"Failed to stop measure mode: {e}")
         except Exception:
             pass
 
