@@ -17,13 +17,35 @@ def get_pdf_info(pdf_path: str) -> Tuple[int, List[Tuple[int, int]]]:
             - Number of pages
             - List of (width, height) tuples in pixels for each page
     """
+    # Paper size mappings (in points)
+    PAPER_SIZES = {
+    "A0": (2384, 3370),
+    "A1": (1684, 2384),
+    "A2": (1191, 1684),
+    "A3": (842, 1191),
+    "A4": (595, 842),
+    "A5": (420, 595),
+    }
+    
     doc = fitz.open(pdf_path)
     try:
         dims = []
-        for page in doc:
-            # Convert points to pixels at 72 DPI (PDF standard)
+        for i, page in enumerate(doc):
             rect = page.rect
-            dims.append((int(rect.width * 72 / 72), int(rect.height * 72 / 72)))
+            width_px = int(rect.width)
+            height_px = int(rect.height)
+            dims.append((width_px, height_px))
+            
+            # Determine paper size
+            paper_size = "Unknown"
+            for size_name, (w, h) in PAPER_SIZES.items():
+                if (abs(rect.width - w) < 5 and abs(rect.height - h) < 5) or \
+                   (abs(rect.width - h) < 5 and abs(rect.height - w) < 5):
+                    paper_size = size_name
+                    break
+            
+            print(f"Page {i+1}: {width_px}x{height_px} pixels ({paper_size})")
+        
         return len(doc), dims
     finally:
         doc.close()

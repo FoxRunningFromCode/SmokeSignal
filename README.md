@@ -1,27 +1,35 @@
 # Smoke Detector Planner
 
-A desktop application for planning smoke detector installations on floor plans.
+A desktop application for planning smoke detector installations on floor plans — load floor plans, place detectors, configure addresses and ranges, and export layouts to PDF. 🔧🗺️
 
 ## Features
 
 - Load and view floor plans
-- Add and configure smoke detectors
+- Add, move, and configure smoke detectors (model, range, bus, address, serial)
 - Draw connections between detectors
-- Set detector properties (model, range, bus number, address, serial number)
-- Save project files
-- Export to PDF with detector layout and configuration details
+- Save projects and export detector layouts to PDF
 
 ## Installation
 
-1. Create a virtual environment:
+### Quick start (user)
+- If you have the Windows installer, run it to install Smoke Detector Planner.
+- If running from source:
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\activate
+pip install -r requirements.txt
+python src/main.py
 ```
 
-2. Install dependencies:
+### Developer setup
+1. Create & activate virtualenv (see above).
+2. Install dev/test dependencies:
 ```powershell
 pip install -r requirements.txt
+```
+3. Run the app from source:
+```powershell
+python src/main.py
 ```
 
 ## Usage
@@ -54,9 +62,24 @@ python src/main.py
 - `resources/` - Application resources
 - `tests/` - Unit tests
 
+## Build & Packaging 🔧
+- PyInstaller spec file is `SmokeSignal.spec` — used to build the bundled executable.
+- Windows installer files: see `installer/SmokeSignal.iss` and `tools/build_windows_installer.ps1`.
+- Typical build steps:
+  1. Create build with PyInstaller: `pyinstaller SmokeSignal.spec`
+  2. Run the PowerShell packaging script: `.\tools\build_windows_installer.ps1`
+
 ## Development
 
 To run tests:
 ```powershell
 pytest tests/
 ```
+
+## Contributing 🤝
+- Fork the repo, create a branch, implement changes, and open a PR with a description and tests.
+- Please keep changes small and focused.
+
+## License & Contact
+- Add your license text here (e.g., MIT).
+- Contact: add maintainer email or GitHub handle.
